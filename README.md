@@ -35,7 +35,7 @@ A modern desktop application built in Python (PySide6) to monitor Hikvision DVR 
 5. **Instant Snapshots**:
    - Click the **Snapshot** button (or press `S`) to save uncompressed high-resolution snapshots.
    - Click **Record** (or press `R`) to save one camera as an MP4; in grid view, choose the camera to record. FFmpeg is required.
-   - Native runs save to `./snapshots/`; Flatpak saves to `Pictures/Hikvision Camera Viewer/`.
+   - Choose the destination for snapshots and recordings in **Settings**. The default is `./snapshots/` natively and `Pictures/Hikvision Camera Viewer/` in Flatpak.
 
 5. **HQ RTSP Stream Launcher**:
    - Click **"Open HQ RTSP"** to spawn `ffplay` with low-latency flags (`-fflags nobuffer -flags low_delay -framedrop`) for full-framerate hardware decoding when needed.

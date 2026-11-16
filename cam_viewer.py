@@ -106,6 +106,16 @@ class ViewerState:
     camera_count: int = 4
     events_visible: bool = True
     auto_save_motion: bool = False
+    artifact_directory: str = ""
+
+
+def default_artifact_directory():
+    if os.environ.get("FLATPAK_ID"):
+        pictures_dir = QStandardPaths.writableLocation(
+            QStandardPaths.PicturesLocation
+        )
+        return str((Path(pictures_dir) / "Hikvision Camera Viewer").resolve())
+    return str(Path("./snapshots").resolve())
 
 
 def camera_grid_dimensions(camera_count: int):
@@ -178,9 +188,11 @@ def save_dvr_config(settings: QtCore.QSettings, config: DVRConfig):
 
 
 def load_viewer_state(
-    settings: QtCore.QSettings, channels: list
+    settings: QtCore.QSettings, channels: list, default_directory: str
 ) -> ViewerState:
-    defaults = ViewerState(camera_count=len(channels))
+    defaults = ViewerState(
+        camera_count=len(channels), artifact_directory=default_directory
+    )
     try:
         state = ViewerState(
             backend_mode=str(settings.value("viewer/backend", defaults.backend_mode)),
@@ -194,6 +206,9 @@ def load_viewer_state(
             auto_save_motion=settings.value(
                 "viewer/auto_save_motion", defaults.auto_save_motion, type=bool
             ),
+            artifact_directory=str(
+                settings.value("viewer/artifact_directory", default_directory)
+            ).strip(),
         )
     except (TypeError, ValueError) as exc:
         raise ValueError("Saved viewer state contains invalid values.") from exc
@@ -210,6 +225,11 @@ def load_viewer_state(
         raise ValueError("Saved camera view is not in the monitored channel list.")
     if not 1 <= state.camera_count <= len(channels):
         raise ValueError("Saved camera count is outside the monitored channel range.")
+    if not state.artifact_directory:
+        raise ValueError("Saved artifact directory cannot be empty.")
+    state.artifact_directory = str(
+        Path(state.artifact_directory).expanduser().resolve()
+    )
     return state
 
 
@@ -226,6 +246,7 @@ def save_viewer_state(
     settings.setValue("viewer/camera_count", state.camera_count)
     settings.setValue("viewer/events_visible", state.events_visible)
     settings.setValue("viewer/auto_save_motion", state.auto_save_motion)
+    settings.setValue("viewer/artifact_directory", state.artifact_directory)
     settings.setValue("viewer/window_geometry", geometry)
     settings.setValue("viewer/splitter_state", splitter_state)
     settings.sync()
@@ -1017,11 +1038,11 @@ class CameraViewWidget(QFrame):
 # Settings Dialog
 # ==============================================================================
 class SettingsDialog(QDialog):
-    def __init__(self, config: DVRConfig, parent=None):
+    def __init__(self, config: DVRConfig, artifact_directory: Path, parent=None):
         super().__init__(parent)
         self.config = config
-        self.setWindowTitle("DVR Connection Settings")
-        self.setMinimumWidth(380)
+        self.setWindowTitle("Application Settings")
+        self.setMinimumWidth(500)
         self.setStyleSheet("""
             QDialog {
                 background-color: #1a1e28;
@@ -1062,6 +1083,16 @@ class SettingsDialog(QDialog):
         self.edit_pass = QLineEdit(config.password)
         self.edit_pass.setEchoMode(QLineEdit.Password)
         self.edit_channels = QLineEdit(", ".join(map(str, config.channels)))
+        self.edit_artifact_directory = QLineEdit(str(artifact_directory))
+        btn_browse_artifact_directory = QPushButton("Browse...")
+        btn_browse_artifact_directory.clicked.connect(
+            self._browse_artifact_directory
+        )
+        artifact_directory_row = QWidget()
+        artifact_directory_layout = QHBoxLayout(artifact_directory_row)
+        artifact_directory_layout.setContentsMargins(0, 0, 0, 0)
+        artifact_directory_layout.addWidget(self.edit_artifact_directory)
+        artifact_directory_layout.addWidget(btn_browse_artifact_directory)
 
         form.addRow("DVR IP Address:", self.edit_ip)
         form.addRow("HTTP ISAPI Port:", self.edit_http_port)
@@ -1069,6 +1100,7 @@ class SettingsDialog(QDialog):
         form.addRow("Username:", self.edit_user)
         form.addRow("Password:", self.edit_pass)
         form.addRow("Monitored Channels:", self.edit_channels)
+        form.addRow("Save snapshots and recordings to:", artifact_directory_row)
 
         layout.addLayout(form)
 
@@ -1082,6 +1114,21 @@ class SettingsDialog(QDialog):
         btn_box.accepted.connect(self._validate_and_accept)
         btn_box.rejected.connect(self.reject)
         layout.addWidget(btn_box)
+
+    def _browse_artifact_directory(self):
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "Select Artifact Directory",
+            self.edit_artifact_directory.text(),
+        )
+        if directory:
+            self.edit_artifact_directory.setText(directory)
+
+    def get_artifact_directory(self) -> Path:
+        directory = self.edit_artifact_directory.text().strip()
+        if not directory:
+            raise ValueError("Artifact save directory cannot be empty.")
+        return Path(directory).expanduser().resolve()
 
     def get_updated_config(self) -> DVRConfig:
         ip = self.edit_ip.text().strip()
@@ -1118,6 +1165,7 @@ class SettingsDialog(QDialog):
     def _validate_and_accept(self):
         try:
             self.get_updated_config()
+            self.get_artifact_directory()
         except ValueError as exc:
             QMessageBox.warning(self, "Invalid DVR Settings", str(exc))
             return
@@ -1146,19 +1194,21 @@ class MainWindow(QMainWindow):
         except ValueError as exc:
             self.config = DVRConfig()
             QMessageBox.warning(self, "Invalid Saved DVR Settings", str(exc))
+        default_directory = default_artifact_directory()
         try:
             self.viewer_state = load_viewer_state(
-                self.settings, self.config.channels
+                self.settings, self.config.channels, default_directory
             )
         except ValueError as exc:
-            self.viewer_state = ViewerState(camera_count=len(self.config.channels))
+            self.viewer_state = ViewerState(
+                camera_count=len(self.config.channels),
+                artifact_directory=default_directory,
+            )
             QMessageBox.warning(self, "Invalid Saved Viewer State", str(exc))
 
-        if os.environ.get("FLATPAK_ID"):
-            pictures_dir = QStandardPaths.writableLocation(QStandardPaths.PicturesLocation)
-            self.snapshot_dir = Path(pictures_dir) / "Hikvision Camera Viewer"
-        else:
-            self.snapshot_dir = Path("./snapshots")
+        self.snapshot_dir = Path(
+            self.viewer_state.artifact_directory
+        ).expanduser().resolve()
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
 
         self.workers = {}
@@ -1962,13 +2012,20 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "RTSP Error", f"Failed to launch ffplay:\n{ex}")
 
     def _open_settings(self):
-        dialog = SettingsDialog(self.config, self)
+        dialog = SettingsDialog(self.config, self.snapshot_dir, self)
         if dialog.exec() == QDialog.Accepted:
             try:
                 new_config = dialog.get_updated_config()
+                new_artifact_directory = dialog.get_artifact_directory()
+                new_artifact_directory.mkdir(parents=True, exist_ok=True)
+                self.settings.setValue(
+                    "viewer/artifact_directory", str(new_artifact_directory)
+                )
                 save_dvr_config(self.settings, new_config)
             except (OSError, ValueError) as exc:
-                QMessageBox.critical(self, "Settings Error", f"Could not save DVR settings:\n{exc}")
+                QMessageBox.critical(
+                    self, "Settings Error", f"Could not save settings:\n{exc}"
+                )
                 return
 
             channels_changed = new_config.channels != self.config.channels
@@ -1977,6 +2034,7 @@ class MainWindow(QMainWindow):
             self._stop_alert_worker()
             self.workers.clear()
             self.config = new_config
+            self.snapshot_dir = new_artifact_directory
             self.lbl_status_dvr.setText(f"DVR: {self.config.ip} | User: {self.config.username}")
             if channels_changed:
                 self._rebuild_camera_views()
@@ -2020,6 +2078,7 @@ class MainWindow(QMainWindow):
             camera_count=self.camera_count,
             events_visible=self.btn_toggle_log.isChecked(),
             auto_save_motion=self.chk_auto_motion.isChecked(),
+            artifact_directory=str(self.snapshot_dir),
         )
         try:
             save_viewer_state(
