@@ -12,8 +12,10 @@ A modern desktop application built in Python (PySide6) to monitor Hikvision DVR 
    - Easily switch between engines on the fly from the **Engine** dropdown on the toolbar. The Speed selector is disabled for HTTP.
 
 2. **Flexible Camera Selection**:
-   - Choose how many configured cameras to show in the grid; layouts adapt from `1x1` and `2x1` to `2x2`, `3x2`, and larger grids.
-   - **Grid View**: Monitor the selected number of cameras simultaneously in real time.
+   - Click **Cameras** on the toolbar to choose the configured cameras shown in Grid View with a checklist.
+   - The grid layout adapts to the number selected: `1` camera uses `1x1`, `2` use `2x1`, `3–4` use `2x2`, and larger selections expand automatically.
+   - The selected camera set is restored when the application is reopened.
+   - **Grid View**: Monitor the selected cameras simultaneously in real time.
    - **Single Camera Mode**: Focus on any configured camera with high-resolution scaling.
    - **Quick Zoom**: Double-click any camera tile in the grid to zoom in immediately; double-click again or press `Esc` to return to the grid.
 
@@ -50,7 +52,7 @@ A modern desktop application built in Python (PySide6) to monitor Hikvision DVR 
    - `F` or `F11`: Fullscreen toggle
    - `Esc`: Return from single camera to grid, or exit fullscreen
 
-The application restores the last-used video engine, FPS, quality, camera count,
+The application restores the last-used video engine, FPS, quality, selected cameras,
 view mode, Events panel visibility, window size, and panel layout when reopened.
 
 ---

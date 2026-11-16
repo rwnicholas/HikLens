@@ -21,7 +21,7 @@ import time
 import re
 import subprocess
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 import requests
@@ -71,6 +71,38 @@ def _make_icon(name: str) -> QIcon:
     return QIcon(pixmap)
 
 
+def _configure_dark_theme(app: QApplication):
+    app.setStyle("Fusion")
+    palette = QtGui.QPalette()
+    for role, color in (
+        (QtGui.QPalette.ColorRole.Window, "#0b0e14"),
+        (QtGui.QPalette.ColorRole.WindowText, "#e2e8f0"),
+        (QtGui.QPalette.ColorRole.Base, "#12151c"),
+        (QtGui.QPalette.ColorRole.AlternateBase, "#1f2937"),
+        (QtGui.QPalette.ColorRole.ToolTipBase, "#1f2937"),
+        (QtGui.QPalette.ColorRole.ToolTipText, "#f8fafc"),
+        (QtGui.QPalette.ColorRole.Text, "#f8fafc"),
+        (QtGui.QPalette.ColorRole.Button, "#1f2937"),
+        (QtGui.QPalette.ColorRole.ButtonText, "#e2e8f0"),
+        (QtGui.QPalette.ColorRole.BrightText, "#ffffff"),
+        (QtGui.QPalette.ColorRole.Link, "#38bdf8"),
+        (QtGui.QPalette.ColorRole.Highlight, "#2563eb"),
+        (QtGui.QPalette.ColorRole.HighlightedText, "#ffffff"),
+    ):
+        palette.setColor(role, QColor(color))
+    palette.setColor(
+        QtGui.QPalette.ColorGroup.Disabled,
+        QtGui.QPalette.ColorRole.Text,
+        QColor("#6b7280"),
+    )
+    palette.setColor(
+        QtGui.QPalette.ColorGroup.Disabled,
+        QtGui.QPalette.ColorRole.ButtonText,
+        QColor("#6b7280"),
+    )
+    app.setPalette(palette)
+
+
 @dataclass
 class DVRConfig:
     ip: str = os.getenv("DVR_IP", "192.0.2.1")
@@ -103,7 +135,7 @@ class ViewerState:
     fps: int = 10
     quality_mode: str = "auto"
     active_mode: str = "ALL"
-    camera_count: int = 4
+    visible_channels: list = field(default_factory=list)
     events_visible: bool = True
     auto_save_motion: bool = False
     artifact_directory: str = ""
@@ -191,15 +223,42 @@ def load_viewer_state(
     settings: QtCore.QSettings, channels: list, default_directory: str
 ) -> ViewerState:
     defaults = ViewerState(
-        camera_count=len(channels), artifact_directory=default_directory
+        visible_channels=list(channels), artifact_directory=default_directory
     )
     try:
+        raw_visible_channels = settings.value("viewer/visible_channels")
+        if raw_visible_channels is None:
+            legacy_count = int(
+                settings.value("viewer/camera_count", len(channels))
+            )
+            legacy_count = min(max(legacy_count, 1), len(channels))
+            visible_channels = list(channels[:legacy_count])
+        else:
+            channel_tokens = (
+                [str(channel).strip() for channel in raw_visible_channels]
+                if isinstance(raw_visible_channels, (list, tuple))
+                else str(raw_visible_channels).split(",")
+            )
+            if not channel_tokens or any(not token.isdigit() for token in channel_tokens):
+                raise ValueError("Saved visible cameras must be comma-separated numbers.")
+            saved_channels = [int(token) for token in channel_tokens]
+            if any(channel < 1 for channel in saved_channels) or len(
+                set(saved_channels)
+            ) != len(saved_channels):
+                raise ValueError("Saved visible cameras must be positive and unique.")
+            selected = set(saved_channels)
+            visible_channels = [
+                channel for channel in channels if channel in selected
+            ]
+            if not visible_channels:
+                visible_channels = list(channels)
+
         state = ViewerState(
             backend_mode=str(settings.value("viewer/backend", defaults.backend_mode)),
             fps=int(settings.value("viewer/fps", defaults.fps)),
             quality_mode=str(settings.value("viewer/quality", defaults.quality_mode)),
             active_mode=str(settings.value("viewer/mode", defaults.active_mode)),
-            camera_count=int(settings.value("viewer/camera_count", defaults.camera_count)),
+            visible_channels=visible_channels,
             events_visible=settings.value(
                 "viewer/events_visible", defaults.events_visible, type=bool
             ),
@@ -223,8 +282,8 @@ def load_viewer_state(
         str(channel) for channel in channels
     }:
         raise ValueError("Saved camera view is not in the monitored channel list.")
-    if not 1 <= state.camera_count <= len(channels):
-        raise ValueError("Saved camera count is outside the monitored channel range.")
+    if not state.visible_channels:
+        raise ValueError("At least one grid camera must be selected.")
     if not state.artifact_directory:
         raise ValueError("Saved artifact directory cannot be empty.")
     state.artifact_directory = str(
@@ -243,7 +302,10 @@ def save_viewer_state(
     settings.setValue("viewer/fps", state.fps)
     settings.setValue("viewer/quality", state.quality_mode)
     settings.setValue("viewer/mode", state.active_mode)
-    settings.setValue("viewer/camera_count", state.camera_count)
+    settings.setValue(
+        "viewer/visible_channels",
+        ",".join(map(str, state.visible_channels)),
+    )
     settings.setValue("viewer/events_visible", state.events_visible)
     settings.setValue("viewer/auto_save_motion", state.auto_save_motion)
     settings.setValue("viewer/artifact_directory", state.artifact_directory)
@@ -1172,6 +1234,45 @@ class SettingsDialog(QDialog):
         self.accept()
 
 
+class CameraSelectionDialog(QDialog):
+    def __init__(self, channels: list, selected_channels: list, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Select Grid Cameras")
+        self.setMinimumSize(320, 360)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Choose the cameras to show in Grid View:"))
+        self.camera_list = QListWidget()
+        selected = set(selected_channels)
+        for channel in channels:
+            item = QListWidgetItem(f"Camera {channel}")
+            item.setData(Qt.UserRole, channel)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked if channel in selected else Qt.Unchecked)
+            self.camera_list.addItem(item)
+        layout.addWidget(self.camera_list)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self._validate_and_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def get_selected_channels(self) -> list:
+        return [
+            self.camera_list.item(index).data(Qt.UserRole)
+            for index in range(self.camera_list.count())
+            if self.camera_list.item(index).checkState() == Qt.Checked
+        ]
+
+    def _validate_and_accept(self):
+        if not self.get_selected_channels():
+            QMessageBox.warning(
+                self, "No Cameras Selected", "Select at least one camera for Grid View."
+            )
+            return
+        self.accept()
+
+
 # ==============================================================================
 # Main Application Window
 # ==============================================================================
@@ -1201,7 +1302,7 @@ class MainWindow(QMainWindow):
             )
         except ValueError as exc:
             self.viewer_state = ViewerState(
-                camera_count=len(self.config.channels),
+                visible_channels=list(self.config.channels),
                 artifact_directory=default_directory,
             )
             QMessageBox.warning(self, "Invalid Saved Viewer State", str(exc))
@@ -1217,7 +1318,7 @@ class MainWindow(QMainWindow):
         self.recording_channel = None
         self.active_mode = "ALL"  # "ALL", "1", "2", "3", "4"
         self.backend_mode = "HTTP"  # "HTTP" or "RTSP"
-        self.camera_count = len(self.config.channels)
+        self.selected_channels = list(self.viewer_state.visible_channels)
         self.is_paused = False
         self.auto_save_motion = False
 
@@ -1255,7 +1356,15 @@ class MainWindow(QMainWindow):
             QComboBox QAbstractItemView {
                 background-color: #1f2937;
                 color: #f8fafc;
+                border: 1px solid #374151;
+                outline: 0;
                 selection-background-color: #2563eb;
+            }
+            QComboBox QAbstractItemView::item {
+                padding: 5px 8px;
+            }
+            QComboBox QAbstractItemView::item:hover {
+                background-color: #374151;
             }
             QPushButton {
                 background-color: #1f2937;
@@ -1303,22 +1412,14 @@ class MainWindow(QMainWindow):
         self.combo_cam.currentIndexChanged.connect(self._on_combo_selection)
         toolbar.addWidget(self.combo_cam)
 
-        toolbar.addWidget(QLabel(" Show: "))
-        self.combo_camera_count = QComboBox()
-        for count in range(1, len(self.config.channels) + 1):
-            rows, columns = camera_grid_dimensions(count)
-            label = f"{count} Camera{'s' if count != 1 else ''} ({columns}x{rows})"
-            self.combo_camera_count.addItem(label, count)
-        self.combo_camera_count.setToolTip(
-            "Number of cameras displayed in Grid View"
+        self.btn_select_cameras = QPushButton()
+        self.btn_select_cameras.setIcon(_make_icon("grid"))
+        self.btn_select_cameras.setIconSize(QSize(16, 16))
+        self.btn_select_cameras.setToolTip(
+            "Choose which cameras appear in Grid View"
         )
-        self.combo_camera_count.setCurrentIndex(
-            self.combo_camera_count.findData(self.camera_count)
-        )
-        self.combo_camera_count.currentIndexChanged.connect(
-            self._on_camera_count_changed
-        )
-        toolbar.addWidget(self.combo_camera_count)
+        self.btn_select_cameras.clicked.connect(self._select_grid_cameras)
+        toolbar.addWidget(self.btn_select_cameras)
 
         toolbar.addSeparator()
 
@@ -1495,26 +1596,44 @@ class MainWindow(QMainWindow):
         self.status_bar.addPermanentWidget(self.lbl_status_alert)
 
     def _update_camera_grid(self):
-        rows, columns = camera_grid_dimensions(self.camera_count)
+        selected_channels = [
+            channel
+            for channel in self.config.channels
+            if channel in self.selected_channels
+        ]
+        camera_count = len(selected_channels)
+        rows, columns = camera_grid_dimensions(camera_count)
         self.combo_cam.setItemText(
-            0, f"Grid View ({self.camera_count}, {columns}x{rows})"
+            0, f"Grid View ({camera_count}, {columns}x{rows})"
+        )
+        self.btn_select_cameras.setText(
+            f"Cameras ({camera_count}, {columns}x{rows})"
         )
         for tile in self.tiles.values():
             self.grid_layout.removeWidget(tile)
 
-        for index, channel in enumerate(self.config.channels):
+        for index, channel in enumerate(selected_channels):
             tile = self.tiles[channel]
-            if index >= self.camera_count:
-                tile.hide()
-                continue
             self.grid_layout.addWidget(tile, index // columns, index % columns)
             tile.show()
+        for channel, tile in self.tiles.items():
+            if channel not in selected_channels:
+                tile.hide()
 
-    def _rebuild_camera_views(self):
+    def _rebuild_camera_views(self, previous_channels: list):
         mode = self.active_mode
         if mode != "ALL" and int(mode) not in self.config.channels:
             mode = "ALL"
-        self.camera_count = min(self.camera_count, len(self.config.channels))
+        was_all_selected = set(self.selected_channels) == set(previous_channels)
+        if was_all_selected:
+            self.selected_channels = list(self.config.channels)
+        else:
+            selected = set(self.selected_channels)
+            self.selected_channels = [
+                channel for channel in self.config.channels if channel in selected
+            ]
+            if not self.selected_channels:
+                self.selected_channels = list(self.config.channels)
 
         for tile in self.tiles.values():
             self.grid_layout.removeWidget(tile)
@@ -1529,17 +1648,6 @@ class MainWindow(QMainWindow):
                 _make_icon("camera"), f"Camera {channel}", str(channel)
             )
         self.combo_cam.blockSignals(signals_were_blocked)
-
-        signals_were_blocked = self.combo_camera_count.blockSignals(True)
-        self.combo_camera_count.clear()
-        for count in range(1, len(self.config.channels) + 1):
-            rows, columns = camera_grid_dimensions(count)
-            label = f"{count} Camera{'s' if count != 1 else ''} ({columns}x{rows})"
-            self.combo_camera_count.addItem(label, count)
-        self.combo_camera_count.setCurrentIndex(
-            self.combo_camera_count.findData(self.camera_count)
-        )
-        self.combo_camera_count.blockSignals(signals_were_blocked)
 
         for channel in self.config.channels:
             tile = CameraViewWidget(channel)
@@ -1563,13 +1671,12 @@ class MainWindow(QMainWindow):
     def _restore_viewer_state(self):
         state = self.viewer_state
         self.backend_mode = state.backend_mode
-        self.camera_count = state.camera_count
+        self.selected_channels = list(state.visible_channels)
 
         for combo, value in (
             (self.combo_backend, state.backend_mode),
             (self.combo_fps, state.fps),
             (self.combo_quality, state.quality_mode),
-            (self.combo_camera_count, state.camera_count),
             (self.combo_cam, state.active_mode),
         ):
             index = combo.findData(value)
@@ -1620,7 +1727,7 @@ class MainWindow(QMainWindow):
                 or is_focused
                 or (
                     self.active_mode == "ALL"
-                    and ch in self.config.channels[:self.camera_count]
+                    and ch in self.selected_channels
                 )
             )
             if self.backend_mode == "RTSP":
@@ -1739,11 +1846,13 @@ class MainWindow(QMainWindow):
         mode = self.combo_cam.itemData(index)
         self.switch_mode(mode)
 
-    def _on_camera_count_changed(self, index: int):
-        camera_count = self.combo_camera_count.itemData(index)
-        if camera_count is None:
+    def _select_grid_cameras(self):
+        dialog = CameraSelectionDialog(
+            self.config.channels, self.selected_channels, self
+        )
+        if dialog.exec() != QDialog.Accepted:
             return
-        self.camera_count = int(camera_count)
+        self.selected_channels = dialog.get_selected_channels()
         self._update_camera_grid()
         if self.active_mode == "ALL":
             self._sync_worker_activity()
@@ -1754,7 +1863,7 @@ class MainWindow(QMainWindow):
             w.set_resolution_mode(q_mode)
 
     def _sync_worker_activity(self):
-        visible_channels = set(self.config.channels[:self.camera_count])
+        visible_channels = set(self.selected_channels)
         for channel, worker in self.workers.items():
             is_focused = self.active_mode == str(channel)
             worker.set_focused(is_focused)
@@ -1857,11 +1966,11 @@ class MainWindow(QMainWindow):
 
     def _take_snapshot(self):
         if self.active_mode == "ALL":
-            for ch in self.config.channels[:self.camera_count]:
+            for ch in self.selected_channels:
                 self._save_camera_snapshot(ch)
-            noun = "camera" if self.camera_count == 1 else "cameras"
+            noun = "camera" if len(self.selected_channels) == 1 else "cameras"
             self.status_bar.showMessage(
-                f"Saved snapshots for {self.camera_count} displayed {noun}!",
+                f"Saved snapshots for {len(self.selected_channels)} displayed {noun}!",
                 4000,
             )
         else:
@@ -1881,7 +1990,7 @@ class MainWindow(QMainWindow):
             return
 
         if self.active_mode == "ALL":
-            channels_to_record = self.config.channels[:self.camera_count]
+            channels_to_record = self.selected_channels
             selected_channel, accepted = QInputDialog.getItem(
                 self,
                 "Record Video",
@@ -2028,7 +2137,8 @@ class MainWindow(QMainWindow):
                 )
                 return
 
-            channels_changed = new_config.channels != self.config.channels
+            previous_channels = list(self.config.channels)
+            channels_changed = new_config.channels != previous_channels
             for w in self.workers.values():
                 w.stop()
             self._stop_alert_worker()
@@ -2037,7 +2147,7 @@ class MainWindow(QMainWindow):
             self.snapshot_dir = new_artifact_directory
             self.lbl_status_dvr.setText(f"DVR: {self.config.ip} | User: {self.config.username}")
             if channels_changed:
-                self._rebuild_camera_views()
+                self._rebuild_camera_views(previous_channels)
             self._start_threads()
             QMessageBox.information(self, "Settings Saved", "DVR settings updated and connections refreshed!")
 
@@ -2075,7 +2185,7 @@ class MainWindow(QMainWindow):
             fps=int(self.combo_fps.currentData()),
             quality_mode=str(self.combo_quality.currentData()),
             active_mode=self.active_mode,
-            camera_count=self.camera_count,
+            visible_channels=list(self.selected_channels),
             events_visible=self.btn_toggle_log.isChecked(),
             auto_save_motion=self.chk_auto_motion.isChecked(),
             artifact_directory=str(self.snapshot_dir),
@@ -2109,8 +2219,7 @@ def main():
     os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
     app = QApplication(sys.argv)
     app.setApplicationName("Hikvision CCTV Stream Viewer")
-
-    # Set dark palette base
+    _configure_dark_theme(app)
     font = QFont("Sans-Serif", 10)
     app.setFont(font)
 
