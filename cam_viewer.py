@@ -6,6 +6,8 @@ Configure the DVR through the Settings dialog or DVR_* environment variables.
 
 import sys
 import os
+import queue
+import threading
 
 # AMD RX 7800 XT — use VAAPI (radeonsi) for hardware-accelerated decode.
 # Do NOT set QT_FFMPEG_NO_HWACCEL; let Qt/FFmpeg pick VAAPI automatically.
@@ -25,11 +27,14 @@ import requests
 from requests.auth import HTTPDigestAuth
 
 from PySide6 import QtCore, QtGui, QtWidgets
-from PySide6.QtCore import Qt, QThread, Signal, Slot, QTimer, QSize, QPoint, QUrl
+from PySide6.QtCore import (
+    Qt, QBuffer, QIODevice, QThread, Signal, Slot, QTimer, QSize, QPoint,
+    QStandardPaths, QUrl,
+)
 from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QFont, QPen, QAction, QIcon
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QGridLayout, QLabel, QPushButton, QComboBox, QSlider, QStatusBar,
+    QGridLayout, QLabel, QPushButton, QComboBox, QInputDialog, QSlider, QStatusBar,
     QToolBar, QFrame, QFileDialog, QMessageBox, QDialog, QLineEdit,
     QFormLayout, QDialogButtonBox, QStackedWidget, QSplitter,
     QListWidget, QListWidgetItem, QCheckBox
@@ -142,6 +147,7 @@ class CameraWorker(QThread):
         self._paused = False
         self._resolution_mode = "auto"
         self._is_focused = False
+        self._stop_event = threading.Event()
 
     def set_active(self, active: bool):
         self._active = active
@@ -168,11 +174,10 @@ class CameraWorker(QThread):
 
     def stop(self):
         self._running = False
-        self.wait(1500)
+        self._stop_event.set()
+        self.wait()
 
     def run(self):
-        import threading
-
         frames_counted = 0
         last_fps_time = time.time()
         self.status_changed.emit(self.channel, "Connecting...", False)
@@ -181,17 +186,18 @@ class CameraWorker(QThread):
             nonlocal frames_counted
             s = requests.Session()
             s.auth = HTTPDigestAuth(self.config.username, self.config.password)
-            time.sleep(sub_id * 0.08)  # Stagger requests by 80ms
+            if self._stop_event.wait(sub_id * 0.08):
+                return
             backoff = 0.5
             failure_logged = False
             while self._running:
                 if not self._active or self._paused:
-                    time.sleep(0.08)
+                    self._stop_event.wait(0.08)
                     continue
 
                 # If low FPS selected (<= 5 FPS), only worker 0 runs
                 if sub_id > 0 and self._target_fps <= 5:
-                    time.sleep(0.15)
+                    self._stop_event.wait(0.15)
                     continue
 
                 res_mode = self.get_effective_resolution()
@@ -216,7 +222,7 @@ class CameraWorker(QThread):
                                 f"HTTP snapshot request failed (HTTP {resp.status_code})",
                             )
                             failure_logged = True
-                        time.sleep(backoff)
+                        self._stop_event.wait(backoff)
                         backoff = min(backoff * 1.5, 4.0)
                 except Exception as e:
                     self.status_changed.emit(self.channel, "Offline", False)
@@ -227,20 +233,21 @@ class CameraWorker(QThread):
                             f"HTTP snapshot request failed ({type(e).__name__})",
                         )
                         failure_logged = True
-                    time.sleep(backoff)
+                    self._stop_event.wait(backoff)
                     backoff = min(backoff * 1.5, 4.0)
 
                 # Regulate to target_fps across workers
                 elapsed = time.time() - t_req
-                target_gap = 2.0 / self._target_fps
+                worker_count = 1 if self._target_fps <= 5 else 2
+                target_gap = worker_count / self._target_fps
                 if elapsed < target_gap:
-                    time.sleep(target_gap - elapsed)
+                    self._stop_event.wait(target_gap - elapsed)
 
         threads = [threading.Thread(target=sub_worker, args=(i,), daemon=True) for i in range(2)]
         for t in threads: t.start()
 
         while self._running:
-            self.msleep(1000)
+            self.msleep(100)
             now = time.time()
             dur = now - last_fps_time
             if dur >= 0.9:
@@ -250,7 +257,7 @@ class CameraWorker(QThread):
                 last_fps_time = now
 
         for t in threads:
-            t.join(timeout=0.5)
+            t.join()
 
 
 # ==============================================================================
@@ -264,10 +271,12 @@ class AlertStreamWorker(QThread):
         super().__init__(parent)
         self.config = config
         self._running = True
+        self._stop_event = threading.Event()
 
     def stop(self):
         self._running = False
-        self.wait(1000)
+        self._stop_event.set()
+        self.wait()
 
     def run(self):
         url = self.config.alert_url()
@@ -278,11 +287,11 @@ class AlertStreamWorker(QThread):
                     url,
                     auth=HTTPDigestAuth(self.config.username, self.config.password),
                     stream=True,
-                    timeout=15.0
+                    timeout=(5.0, 1.0)
                 ) as resp:
                     if resp.status_code != 200:
                         self.alert_status.emit(f"AlertStream HTTP {resp.status_code}")
-                        time.sleep(5)
+                        self._stop_event.wait(5)
                         continue
 
                     self.alert_status.emit("AlertStream Active")
@@ -308,7 +317,7 @@ class AlertStreamWorker(QThread):
                 continue
             except Exception as e:
                 self.alert_status.emit(f"AlertStream reconnecting...")
-                time.sleep(3)
+                self._stop_event.wait(3)
 
     def _parse_alert(self, xml: str):
         # Look for motion events matching sketch_aug14a.ino criteria
@@ -351,6 +360,7 @@ class RTSPCameraPlayer(QThread):
         self._paused = False
         self._is_focused = False
         self._resolution_mode = "auto"
+        self._target_fps = 10
         self._running = True
         self._proc = None
         self._restart_requested = False
@@ -373,8 +383,7 @@ class RTSPCameraPlayer(QThread):
 
     def stop(self):
         self._running = False
-        self._kill_proc()
-        self.wait(2000)
+        self.wait()
 
     def set_active(self, active: bool):
         self._active = active
@@ -394,7 +403,7 @@ class RTSPCameraPlayer(QThread):
         # ffmpeg keeps running; we just stop forwarding frames
 
     def set_target_fps(self, fps: int):
-        pass  # native RTSP rate from DVR
+        self._target_fps = max(1, min(fps, 30))
 
     def set_resolution_mode(self, mode: str):
         if self._resolution_mode != mode:
@@ -409,6 +418,7 @@ class RTSPCameraPlayer(QThread):
         import queue as _q
         import select as _sel
 
+        last_frame_time = 0.0
         while self._running:
             if not self._active:
                 self.msleep(200)
@@ -519,9 +529,11 @@ class RTSPCameraPlayer(QThread):
                     jpeg_data = buf[start: end + 2]
                     buf = buf[end + 2:]
 
-                    if not self._paused:
+                    now = time.monotonic()
+                    if not self._paused and now - last_frame_time >= 1 / self._target_fps:
                         img = QImage.fromData(jpeg_data, "JPEG")
                         if not img.isNull():
+                            last_frame_time = now
                             got_first_frame = True
                             self._error_logged = False
                             self._frames_counted += 1
@@ -567,19 +579,29 @@ class RTSPCameraPlayer(QThread):
         ]
 
     def _kill_proc(self):
-        if self._proc and self._proc.poll() is None:
-            try:
-                self._proc.stdout.close()
-                if self._proc.stderr:
-                    self._proc.stderr.close()
-                self._proc.terminate()
-                self._proc.wait(timeout=2)
-            except Exception:
-                try:
-                    self._proc.kill()
-                except Exception:
-                    pass
+        proc = self._proc
         self._proc = None
+        if not proc:
+            return
+
+        if proc.poll() is None:
+            try:
+                proc.terminate()
+            except ProcessLookupError:
+                pass
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+                proc.wait()
+
+        if proc.stdout:
+            proc.stdout.close()
+        if proc.stderr:
+            proc.stderr.close()
 
     def _log_error(self, message: str):
         if self._error_logged:
@@ -596,6 +618,125 @@ class RTSPCameraPlayer(QThread):
             self.fps_updated.emit(self.channel, round(fps, 1))
             self._frames_counted = 0
             self._last_fps_time = now
+
+
+# ==============================================================================
+# Video Recording Worker
+# ==============================================================================
+class VideoRecorder(QThread):
+    recording_started = Signal()
+    recording_saved = Signal(str, int)
+    recording_error = Signal(str)
+
+    def __init__(self, path: Path, fps: int, frame_size: QSize, parent=None):
+        super().__init__(parent)
+        self.path = str(path)
+        self.fps = max(1, min(fps, 30))
+        self.frame_size = QSize(
+            max(2, frame_size.width() // 2 * 2),
+            max(2, frame_size.height() // 2 * 2),
+        )
+        self._frames = queue.Queue(maxsize=30)
+        self._running = True
+        self.dropped_frames = 0
+
+    def add_frame(self, image: QImage):
+        if not self._running or image.isNull():
+            return
+        try:
+            self._frames.put_nowait(image.copy())
+        except queue.Full:
+            self.dropped_frames += 1
+
+    def stop(self):
+        self._running = False
+        self.wait()
+
+    def run(self):
+        command = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel", "error",
+            "-y",
+            "-f", "image2pipe",
+            "-vcodec", "mjpeg",
+            "-framerate", str(self.fps),
+            "-i", "-",
+            "-an",
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "23",
+            "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
+            self.path,
+        ]
+        try:
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except FileNotFoundError:
+            self.recording_error.emit("FFmpeg was not found. Install FFmpeg to record video.")
+            return
+        except OSError as exc:
+            self.recording_error.emit(f"Could not start FFmpeg: {exc}")
+            return
+
+        self.recording_started.emit()
+        try:
+            while self._running or not self._frames.empty():
+                try:
+                    image = self._frames.get(timeout=0.1)
+                except queue.Empty:
+                    if process.poll() is not None:
+                        raise RuntimeError(f"FFmpeg exited with status {process.returncode}.")
+                    continue
+
+                if image.size() != self.frame_size:
+                    image = image.scaled(
+                        self.frame_size,
+                        Qt.IgnoreAspectRatio,
+                        Qt.SmoothTransformation,
+                    )
+
+                buffer = QBuffer()
+                if not buffer.open(QIODevice.WriteOnly) or not image.save(buffer, "JPEG", 90):
+                    raise RuntimeError("Could not encode a video frame.")
+                process.stdin.write(bytes(buffer.data()))
+
+            process.stdin.close()
+            return_code = process.wait()
+            if return_code != 0:
+                raise RuntimeError(f"FFmpeg exited with status {return_code}.")
+        except (OSError, RuntimeError) as exc:
+            self._terminate_process(process)
+            self.recording_error.emit(f"Video recording failed: {exc}")
+            return
+
+        self.recording_saved.emit(self.path, self.dropped_frames)
+
+    @staticmethod
+    def _terminate_process(process):
+        if process.stdin and not process.stdin.closed:
+            try:
+                process.stdin.close()
+            except BrokenPipeError:
+                pass
+        if process.poll() is None:
+            try:
+                process.terminate()
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+                process.wait()
 
 
 # ==============================================================================
@@ -898,11 +1039,17 @@ class MainWindow(QMainWindow):
             self.config = DVRConfig()
             QMessageBox.warning(self, "Invalid Saved DVR Settings", str(exc))
 
-        self.snapshot_dir = Path("./snapshots")
-        self.snapshot_dir.mkdir(exist_ok=True)
+        if os.environ.get("FLATPAK_ID"):
+            pictures_dir = QStandardPaths.writableLocation(QStandardPaths.PicturesLocation)
+            self.snapshot_dir = Path(pictures_dir) / "Hikvision Camera Viewer"
+        else:
+            self.snapshot_dir = Path("./snapshots")
+        self.snapshot_dir.mkdir(parents=True, exist_ok=True)
 
         self.workers = {}
         self.tiles = {}
+        self.recorder = None
+        self.recording_channel = None
         self.active_mode = "ALL"  # "ALL", "1", "2", "3", "4"
         self.backend_mode = "HTTP"  # "HTTP" or "RTSP"
         self.is_paused = False
@@ -1012,6 +1159,11 @@ class MainWindow(QMainWindow):
         self.btn_snapshot.clicked.connect(self._take_snapshot)
         toolbar.addWidget(self.btn_snapshot)
 
+        self.btn_record = QPushButton("⏺ Record")
+        self.btn_record.setToolTip("Record one camera to an MP4 video")
+        self.btn_record.clicked.connect(self._toggle_recording)
+        toolbar.addWidget(self.btn_record)
+
         # HQ RTSP Player button
         self.btn_rtsp = QPushButton("🚀 Open HQ RTSP")
         self.btn_rtsp.setToolTip("Open full-rate hardware stream in ffplay")
@@ -1021,13 +1173,15 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
 
         # FPS selector
-        toolbar.addWidget(QLabel(" Speed: "))
+        toolbar.addWidget(QLabel(" Speed (RTSP): "))
         self.combo_fps = QComboBox()
         self.combo_fps.addItem("5 FPS (Low Bandwidth)", 5)
         self.combo_fps.addItem("10 FPS (Balanced)", 10)
         self.combo_fps.addItem("15 FPS (Smooth)", 15)
         self.combo_fps.addItem("Max FPS", 30)
         self.combo_fps.setCurrentIndex(1)
+        self.combo_fps.setToolTip("RTSP frame-rate limit. HTTP snapshot mode is fixed at 5 FPS.")
+        self.combo_fps.setEnabled(self.backend_mode == "RTSP")
         self.combo_fps.currentIndexChanged.connect(self._on_fps_changed)
         toolbar.addWidget(self.combo_fps)
 
@@ -1059,9 +1213,9 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self.btn_toggle_log)
 
         # Settings button
-        btn_settings = QPushButton("⚙️ Settings")
-        btn_settings.clicked.connect(self._open_settings)
-        toolbar.addWidget(btn_settings)
+        self.btn_settings = QPushButton("⚙️ Settings")
+        self.btn_settings.clicked.connect(self._open_settings)
+        toolbar.addWidget(self.btn_settings)
 
         # Fullscreen button
         self.btn_fullscreen = QPushButton("⛶ Fullscreen")
@@ -1144,6 +1298,7 @@ class MainWindow(QMainWindow):
     def _start_threads(self):
         target_fps = self.combo_fps.currentData()
         res_mode = self.combo_quality.currentData()
+        self.combo_fps.setEnabled(self.backend_mode == "RTSP")
 
         # Stop existing workers
         for w in self.workers.values():
@@ -1155,11 +1310,12 @@ class MainWindow(QMainWindow):
             is_focused = (self.active_mode == str(ch))
             if self.backend_mode == "RTSP":
                 worker = RTSPCameraPlayer(ch, self.config, self)
+                worker.set_target_fps(target_fps)
                 worker.set_resolution_mode(res_mode)
                 worker.set_focused(is_focused)
             else:
                 worker = CameraWorker(ch, self.config, self)
-                worker.set_target_fps(target_fps)
+                worker.set_target_fps(5)
                 worker.set_resolution_mode(res_mode)
                 worker.set_focused(is_focused)
 
@@ -1170,23 +1326,37 @@ class MainWindow(QMainWindow):
             self.workers[ch] = worker
             worker.start()
 
-        # Start AlertStream Worker
-        if not hasattr(self, 'alert_worker') or not self.alert_worker.isRunning():
-            self.alert_worker = AlertStreamWorker(self.config, self)
-            self.alert_worker.motion_event.connect(self._on_motion_detected)
-            self.alert_worker.alert_status.connect(self.lbl_status_alert.setText)
-            self.alert_worker.start()
+        if self.btn_toggle_log.isChecked():
+            self._start_alert_worker()
+        else:
+            self._stop_alert_worker()
 
     def _on_backend_changed(self, index: int):
         self.backend_mode = self.combo_backend.itemData(index)
         self.status_bar.showMessage(f"Switching video engine to {self.backend_mode}...", 3000)
         self._start_threads()
 
+    def _start_alert_worker(self):
+        if hasattr(self, "alert_worker") and self.alert_worker.isRunning():
+            return
+        self.alert_worker = AlertStreamWorker(self.config, self)
+        self.alert_worker.motion_event.connect(self._on_motion_detected)
+        self.alert_worker.alert_status.connect(self._on_alert_status)
+        self.alert_worker.start()
+
+    def _stop_alert_worker(self):
+        if hasattr(self, "alert_worker") and self.alert_worker.isRunning():
+            self.alert_worker.stop()
+        self.lbl_status_alert.setText("AlertStream: Paused (events hidden)")
+
     # ==========================================================================
     # Slot Handlers
     # ==========================================================================
     @Slot(int, QImage)
     def _on_frame_ready(self, channel: int, image: QImage):
+        if self.recorder and channel == self.recording_channel:
+            self.recorder.add_frame(image)
+
         # Update grid tile
         if channel in self.tiles:
             self.tiles[channel].update_frame(image)
@@ -1226,6 +1396,9 @@ class MainWindow(QMainWindow):
 
     @Slot(int, str)
     def _on_motion_detected(self, channel: int, time_str: str):
+        if not self.btn_toggle_log.isChecked() or self.sender() is not self.alert_worker:
+            return
+
         # Trigger visual indicator on camera tile
         if channel in self.tiles:
             self.tiles[channel].trigger_motion()
@@ -1279,7 +1452,7 @@ class MainWindow(QMainWindow):
             for c_id, w in self.workers.items():
                 is_this = (c_id == ch)
                 w.set_focused(is_this)
-                w.set_active(is_this)
+                w.set_active(is_this or c_id == self.recording_channel)
 
     def _toggle_pause(self):
         self.is_paused = self.btn_pause.isChecked()
@@ -1288,12 +1461,24 @@ class MainWindow(QMainWindow):
             w.set_paused(self.is_paused)
 
     def _on_fps_changed(self, index: int):
+        if self.backend_mode != "RTSP":
+            return
         fps = self.combo_fps.currentData()
         for w in self.workers.values():
             w.set_target_fps(fps)
 
     def _toggle_event_log(self):
-        self.log_panel.setVisible(self.btn_toggle_log.isChecked())
+        visible = self.btn_toggle_log.isChecked()
+        self.log_panel.setVisible(visible)
+        if visible:
+            self._start_alert_worker()
+        else:
+            self._stop_alert_worker()
+
+    @Slot(str)
+    def _on_alert_status(self, text: str):
+        if self.btn_toggle_log.isChecked() and self.sender() is self.alert_worker:
+            self.lbl_status_alert.setText(text)
 
     def _toggle_fullscreen(self):
         if self.isFullScreen():
@@ -1347,6 +1532,117 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage("Saved snapshots for all cameras!", 4000)
         else:
             self._save_camera_snapshot(int(self.active_mode))
+
+    def _toggle_recording(self):
+        if self.recorder is not None:
+            if self.recorder.isRunning():
+                self._stop_recording()
+            return
+
+        self._start_recording()
+
+    def _start_recording(self):
+        if self.is_paused:
+            QMessageBox.information(self, "Recording", "Resume the video stream before recording.")
+            return
+
+        if self.active_mode == "ALL":
+            selected_channel, accepted = QInputDialog.getItem(
+                self,
+                "Record Video",
+                "Camera to record:",
+                [str(channel) for channel in self.config.channels],
+                0,
+                False,
+            )
+            if not accepted:
+                return
+            channel = int(selected_channel)
+        else:
+            channel = int(self.active_mode)
+
+        image = self.tiles[channel].last_image
+        if image is None or image.isNull():
+            QMessageBox.information(
+                self,
+                "Recording",
+                f"Wait for Camera {channel} to show a frame before recording.",
+            )
+            return
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_path = self.snapshot_dir / f"cam{channel}_{timestamp}.mp4"
+        selected_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Video Recording",
+            str(default_path),
+            "MP4 Video (*.mp4)",
+        )
+        if not selected_path:
+            return
+
+        output_path = Path(selected_path)
+        if output_path.suffix.lower() != ".mp4":
+            output_path = output_path.with_suffix(".mp4")
+        fps_limit = self.combo_fps.currentData() if self.backend_mode == "RTSP" else 5
+        measured_fps = self.tiles[channel].fps
+        fps = (
+            min(fps_limit, max(1, round(measured_fps)))
+            if measured_fps > 0 else fps_limit
+        )
+
+        self.recording_channel = channel
+        self.recorder = VideoRecorder(output_path, fps, image.size(), self)
+        self.recorder.recording_started.connect(self._on_recording_started)
+        self.recorder.recording_saved.connect(self._on_recording_saved)
+        self.recorder.recording_error.connect(self._on_recording_error)
+        self.recorder.finished.connect(self._on_recorder_finished)
+
+        self.btn_record.setText("Preparing...")
+        self.btn_record.setEnabled(False)
+        self.btn_pause.setEnabled(False)
+        self.btn_settings.setEnabled(False)
+        self.combo_backend.setEnabled(False)
+        self.combo_fps.setEnabled(False)
+        self.recorder.start()
+
+    def _stop_recording(self):
+        if self.recorder is None:
+            return
+        self.btn_record.setEnabled(False)
+        self.recorder.stop()
+
+    @Slot()
+    def _on_recording_started(self):
+        self.btn_record.setText("⏹ Stop Recording")
+        self.btn_record.setEnabled(True)
+
+    @Slot(str, int)
+    def _on_recording_saved(self, path: str, dropped_frames: int):
+        message = f"Recording saved: {Path(path).name}"
+        if dropped_frames:
+            message += f" ({dropped_frames} frames skipped because the encoder was busy)"
+        self.status_bar.showMessage(message, 6000)
+        item = QListWidgetItem(f"[{datetime.now().strftime('%H:%M:%S')}] 🎥 {message}")
+        item.setForeground(QtGui.QBrush(QColor("#38bdf8")))
+        self.event_list.insertItem(0, item)
+
+    @Slot(str)
+    def _on_recording_error(self, message: str):
+        QMessageBox.warning(self, "Recording Error", message)
+
+    @Slot()
+    def _on_recorder_finished(self):
+        if self.sender() is not self.recorder:
+            return
+        self.recorder = None
+        self.recording_channel = None
+        self.btn_record.setText("⏺ Record")
+        self.btn_record.setEnabled(True)
+        self.btn_pause.setEnabled(True)
+        self.btn_settings.setEnabled(True)
+        self.combo_backend.setEnabled(True)
+        self.combo_fps.setEnabled(self.backend_mode == "RTSP")
 
     def _launch_rtsp(self):
         # Check if active is single or all
@@ -1412,6 +1708,8 @@ class MainWindow(QMainWindow):
             self.switch_mode("4")
         elif key == Qt.Key_S:
             self._take_snapshot()
+        elif key == Qt.Key_R:
+            self._toggle_recording()
         elif key == Qt.Key_Space:
             self.btn_pause.click()
         elif key in (Qt.Key_F, Qt.Key_F11):
@@ -1420,6 +1718,8 @@ class MainWindow(QMainWindow):
             super().keyPressEvent(event)
 
     def closeEvent(self, event):
+        if self.recorder is not None:
+            self.recorder.stop()
         for w in self.workers.values():
             w.stop()
         if hasattr(self, 'alert_worker'):

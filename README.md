@@ -7,9 +7,9 @@ A modern desktop application built in Python (PySide6) to monitor Hikvision DVR 
 ## 🌟 Key Features
 
 1. **Dual Video Engines (HTTP Snapshot vs Embedded RTSP)**:
-   - **`🌐 HTTP Snapshot (Fast Connect)`**: Uses persistent HTTP Digest sessions to grab frames instantly with zero buffering. Highly stable across all codecs (including H.265+).
-   - **`📡 Embedded RTSP (15 FPS Video)`**: Connects directly to the DVR's RTSP hardware stream (`rtsp://.../Streaming/Channels/X01`) using Qt's internal video pipeline. Delivers continuous, full-framerate video **embedded directly inside the app tiles** — no external windows or players required!
-   - Easily switch between engines on the fly from the **Engine** dropdown on the toolbar.
+   - **`🌐 HTTP Snapshot (5 FPS)`**: Uses persistent HTTP Digest sessions to grab frames with zero buffering. Highly stable across all codecs (including H.265+).
+   - **`📡 Embedded RTSP (Selectable FPS)`**: Connects directly to the DVR's RTSP hardware stream and embeds video in the app tiles. The **Speed** selector limits the displayed frame rate in this mode.
+   - Easily switch between engines on the fly from the **Engine** dropdown on the toolbar. The Speed selector is disabled for HTTP.
 
 2. **Flexible Camera Selection**:
    - **All Cameras (2x2 Grid View)**: Monitor all 4 cameras (Cam 1, Cam 2, Cam 3, Cam 4) simultaneously in real-time.
@@ -25,14 +25,16 @@ A modern desktop application built in Python (PySide6) to monitor Hikvision DVR 
    - Live resolution badge (e.g. `1920x1088`) is displayed on each camera tile in real time.
 
 4. **Real-Time Motion Detection (AlertStream Integration)**:
-   - Connects to `/ISAPI/Event/notification/alertStream` in real time (identical to the Arduino firmware).
+   - Connects to `/ISAPI/Event/notification/alertStream` while the Events panel is visible; hiding the panel pauses the connection.
    - When motion is detected, the corresponding camera flashes a red border and a `🚨 MOTION` badge appears.
    - Activity log tracks timestamps of all motion events.
    - Camera connection failures are also recorded in the Activity & Motion Log.
-   - Optional **"Save on Motion"** toggle automatically captures full-resolution snapshots to `./snapshots/` upon motion.
+   - Optional **"Save on Motion"** toggle automatically captures full-resolution snapshots upon motion.
 
 5. **Instant Snapshots**:
-   - Click the 📸 button (or press `S`) to save uncompressed high-resolution snapshots directly to `./snapshots/`.
+   - Click the 📸 button (or press `S`) to save uncompressed high-resolution snapshots.
+   - Click **Record** (or press `R`) to save one camera as an MP4; in grid view, choose the camera to record. FFmpeg is required.
+   - Native runs save to `./snapshots/`; Flatpak saves to `Pictures/Hikvision Camera Viewer/`.
 
 5. **HQ RTSP Stream Launcher**:
    - Click **"Open HQ RTSP"** to spawn `ffplay` with low-latency flags (`-fflags nobuffer -flags low_delay -framedrop`) for full-framerate hardware decoding when needed.
@@ -43,6 +45,7 @@ A modern desktop application built in Python (PySide6) to monitor Hikvision DVR 
    - `Double-Click`: Zoom in on clicked camera / Zoom out to grid
    - `Space`: Pause / Resume stream
    - `S`: Take snapshot
+   - `R`: Start / stop video recording
    - `F` or `F11`: Fullscreen toggle
    - `Esc`: Return from single camera to grid, or exit fullscreen
 
@@ -64,6 +67,49 @@ python3 cam_viewer.py
 
 ---
 
+## 📦 Flatpak
+
+The Flatpak manifest and desktop integration are in `packaging/flatpak/`.
+With Flatpak, Flatpak Builder, and the Flathub runtime available, build and
+install the app with:
+
+```bash
+flatpak-builder --user --install --force-clean flatpak-build packaging/flatpak/io.github.rwnicholas.HikvisionLinux.yml
+flatpak run io.github.rwnicholas.HikvisionLinux
+```
+
+To create a distributable `.flatpak` bundle instead:
+
+```bash
+flatpak-builder --repo=flatpak-repo flatpak-build packaging/flatpak/io.github.rwnicholas.HikvisionLinux.yml
+flatpak build-bundle flatpak-repo HikvisionCameraViewer.flatpak io.github.rwnicholas.HikvisionLinux stable
+```
+
+The first build downloads the pinned Python dependencies. The Flatpak includes
+the app runtime's FFmpeg and requests LAN access for DVR streams. The target
+runtime must be installed locally or available from a configured Flatpak remote.
+
+## AppImage
+
+Build the x86_64 AppImage with Podman or Docker, `curl`, and `sha256sum`:
+
+```bash
+./packaging/appimage/build-appimage.sh
+```
+
+The output is `dist/HikvisionCameraViewer-x86_64.AppImage`. The AppImage
+bundles Python and Qt; install FFmpeg on the host for embedded RTSP and video
+recording, and `ffplay` for the separate HQ RTSP player. The build downloads
+and verifies its packaging tools and targets Linux systems with glibc 2.36 or
+newer.
+
+On each push to `main`, [GitHub Actions](./.github/workflows/build-packages.yml)
+builds both packages, automatically generates patch versions starting with
+`v1.0.0`, and creates a GitHub Release with the AppImage and Flatpak bundle
+attached. Download them from the Releases page; the workflow can also be
+started manually from the Actions tab to build artifacts without publishing a
+release.
+
 ## ⚙️ DVR Configuration
 
 Configure the DVR by clicking **⚙️ Settings**. Values are saved in the current
@@ -75,3 +121,7 @@ set it to your DVR's address before connecting. HTTP and RTSP ports default to
 
 The password is stored locally in the user's application settings and is not
 encrypted. On Linux, the settings file is restricted to the current user.
+
+## License
+
+This project is licensed under the [MIT License](./LICENSE).

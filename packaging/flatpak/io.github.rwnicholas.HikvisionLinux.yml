@@ -1,0 +1,36 @@
+app-id: io.github.rwnicholas.HikvisionLinux
+branch: stable
+runtime: org.freedesktop.Platform
+runtime-version: "26.08"
+sdk: org.freedesktop.Sdk
+command: hikvision-linux
+finish-args:
+  - --share=network
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --filesystem=xdg-pictures
+modules:
+  - name: hikvision-linux
+    buildsystem: simple
+    build-options:
+      build-args:
+        - --share=network
+    build-commands:
+      - python3 -m pip install --disable-pip-version-check --no-cache-dir --target=/app/lib/hikvision-python -r requirements.txt
+      - install -Dm755 hikvision-linux.sh /app/bin/hikvision-linux
+      - install -Dm644 cam_viewer.py /app/share/hikvision-linux/cam_viewer.py
+      - install -Dm644 io.github.rwnicholas.HikvisionLinux.desktop /app/share/applications/io.github.rwnicholas.HikvisionLinux.desktop
+      - install -Dm644 io.github.rwnicholas.HikvisionLinux.svg /app/share/icons/hicolor/scalable/apps/io.github.rwnicholas.HikvisionLinux.svg
+    sources:
+      - type: file
+        path: ../../cam_viewer.py
+      - type: file
+        path: ../../requirements.txt
+      - type: file
+        path: hikvision-linux.sh
+      - type: file
+        path: io.github.rwnicholas.HikvisionLinux.desktop
+      - type: file
+        path: io.github.rwnicholas.HikvisionLinux.svg

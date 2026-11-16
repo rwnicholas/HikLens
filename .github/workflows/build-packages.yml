@@ -1,0 +1,117 @@
+name: Build packages
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: Generate release version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Set version
+        id: version
+        run: echo "version=v1.0.$((GITHUB_RUN_NUMBER - 1))" >> "$GITHUB_OUTPUT"
+
+  appimage:
+    name: Build AppImage
+    runs-on: ubuntu-24.04
+    needs: version
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Build AppImage
+        run: CONTAINER_ENGINE=docker ./packaging/appimage/build-appimage.sh
+
+      - name: Version AppImage
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: mv dist/HikvisionCameraViewer-x86_64.AppImage "dist/HikvisionCameraViewer-${VERSION}-x86_64.AppImage"
+
+      - name: Upload AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: HikvisionCameraViewer-${{ needs.version.outputs.version }}-AppImage
+          path: dist/HikvisionCameraViewer-${{ needs.version.outputs.version }}-x86_64.AppImage
+          if-no-files-found: error
+          compression-level: 0
+
+  flatpak:
+    name: Build Flatpak bundle
+    runs-on: ubuntu-24.04
+    needs: version
+    timeout-minutes: 60
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Flatpak tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes flatpak flatpak-builder
+
+      - name: Install Flathub runtime and SDK
+        run: |
+          flatpak remote-add --user --if-not-exists flathub \
+            https://flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user --assumeyes flathub \
+            org.freedesktop.Platform//26.08 \
+            org.freedesktop.Sdk//26.08
+
+      - name: Build Flatpak bundle
+        run: |
+          flatpak-builder --user --force-clean --repo=flatpak-repo \
+            flatpak-build packaging/flatpak/io.github.rwnicholas.HikvisionLinux.yml
+          mkdir -p dist
+          flatpak build-bundle flatpak-repo \
+            "dist/HikvisionCameraViewer-${VERSION}.flatpak" \
+            io.github.rwnicholas.HikvisionLinux stable
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+
+      - name: Upload Flatpak bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: HikvisionCameraViewer-${{ needs.version.outputs.version }}-Flatpak
+          path: dist/HikvisionCameraViewer-${{ needs.version.outputs.version }}.flatpak
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-24.04
+    needs: [version, appimage, flatpak]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    steps:
+      - name: Download package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: HikvisionCameraViewer-${{ needs.version.outputs.version }}-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create release and upload packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          if gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $VERSION already exists; skipping duplicate creation."
+            exit 0
+          fi
+          gh release create "$VERSION" release-assets/* \
+            --title "Hikvision Camera Viewer $VERSION" \
+            --generate-notes \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA"

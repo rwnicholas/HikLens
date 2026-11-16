@@ -2,3 +2,10 @@ __pycache__/
 *.py[cod]
 .env
 snapshots/
+.flatpak-builder/
+flatpak-build/
+flatpak-repo/
+.appimage-build/
+.appimage-tools/
+dist/
+*.AppImage
