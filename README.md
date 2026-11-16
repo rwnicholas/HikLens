@@ -66,7 +66,12 @@ python3 cam_viewer.py
 
 ## ⚙️ DVR Configuration
 
-Set `DVR_IP`, `DVR_USERNAME`, and `DVR_PASSWORD` in the environment before launch,
-or configure them in the application by clicking **⚙️ Settings**. The default IP
-is the documentation-only address `192.0.2.1`; set it to the address of your DVR
-before connecting. HTTP and RTSP ports default to `80` and `554`, respectively.
+Configure the DVR by clicking **⚙️ Settings**. Values are saved in the current
+user's application settings and restored on the next launch. `DVR_IP`,
+`DVR_USERNAME`, and `DVR_PASSWORD` environment variables are used when no saved
+setting exists. The default IP is the documentation-only address `192.0.2.1`;
+set it to your DVR's address before connecting. HTTP and RTSP ports default to
+`80` and `554`.
+
+The password is stored locally in the user's application settings and is not
+encrypted. On Linux, the settings file is restricted to the current user.

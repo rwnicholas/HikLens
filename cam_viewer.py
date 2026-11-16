@@ -62,6 +62,67 @@ class DVRConfig:
         return f"http://{self.ip}:{self.http_port}/ISAPI/Event/notification/alertStream"
 
 
+def load_dvr_config(settings: QtCore.QSettings) -> DVRConfig:
+    defaults = DVRConfig()
+    ip = str(settings.value("dvr/ip", defaults.ip) or "").strip()
+    username = str(settings.value("dvr/username", defaults.username) or "").strip()
+    password = str(settings.value("dvr/password", defaults.password) or "")
+
+    def read_port(key: str, default: int) -> int:
+        try:
+            port = int(settings.value(key, default))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Saved setting {key} must be a port number.") from exc
+        if not 1 <= port <= 65535:
+            raise ValueError(f"Saved setting {key} must be between 1 and 65535.")
+        return port
+
+    raw_channels = settings.value("dvr/channels", ",".join(map(str, defaults.channels)))
+    channel_tokens = (
+        [str(channel).strip() for channel in raw_channels]
+        if isinstance(raw_channels, (list, tuple))
+        else str(raw_channels).split(",")
+    )
+    if not channel_tokens or any(not token.strip().isdigit() for token in channel_tokens):
+        raise ValueError("Saved monitored channels must be comma-separated numbers.")
+    channels = [int(token) for token in channel_tokens]
+    if any(channel < 1 for channel in channels) or len(set(channels)) != len(channels):
+        raise ValueError("Saved monitored channels must be positive and unique.")
+    if not ip:
+        raise ValueError("Saved DVR IP address cannot be empty.")
+
+    return DVRConfig(
+        ip=ip,
+        http_port=read_port("dvr/http_port", defaults.http_port),
+        rtsp_port=read_port("dvr/rtsp_port", defaults.rtsp_port),
+        username=username,
+        password=password,
+        channels=channels,
+    )
+
+
+def save_dvr_config(settings: QtCore.QSettings, config: DVRConfig):
+    settings_path = Path(settings.fileName())
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    if os.name == "posix":
+        fd = os.open(settings_path, os.O_CREAT | os.O_WRONLY, 0o600)
+        os.close(fd)
+        os.chmod(settings_path, 0o600)
+
+    settings.setValue("dvr/ip", config.ip)
+    settings.setValue("dvr/http_port", config.http_port)
+    settings.setValue("dvr/rtsp_port", config.rtsp_port)
+    settings.setValue("dvr/username", config.username)
+    settings.setValue("dvr/password", config.password)
+    settings.setValue("dvr/channels", ",".join(map(str, config.channels)))
+    settings.sync()
+
+    if settings.status() != QtCore.QSettings.NoError:
+        raise OSError(f"Could not save DVR settings to {settings_path}.")
+    if os.name == "posix":
+        os.chmod(settings_path, 0o600)
+
+
 # ==============================================================================
 # Camera Streaming Worker Thread
 # ==============================================================================
@@ -746,6 +807,8 @@ class SettingsDialog(QDialog):
         self.edit_ip = QLineEdit(config.ip)
         self.edit_http_port = QLineEdit(str(config.http_port))
         self.edit_rtsp_port = QLineEdit(str(config.rtsp_port))
+        self.edit_http_port.setValidator(QtGui.QIntValidator(1, 65535, self))
+        self.edit_rtsp_port.setValidator(QtGui.QIntValidator(1, 65535, self))
         self.edit_user = QLineEdit(config.username)
         self.edit_pass = QLineEdit(config.password)
         self.edit_pass.setEchoMode(QLineEdit.Password)
@@ -760,27 +823,56 @@ class SettingsDialog(QDialog):
 
         layout.addLayout(form)
 
+        storage_note = QLabel(
+            "Settings are saved locally for this user. The password is not encrypted."
+        )
+        storage_note.setWordWrap(True)
+        layout.addWidget(storage_note)
+
         btn_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        btn_box.accepted.connect(self.accept)
+        btn_box.accepted.connect(self._validate_and_accept)
         btn_box.rejected.connect(self.reject)
         layout.addWidget(btn_box)
 
     def get_updated_config(self) -> DVRConfig:
-        try:
-            chans = [int(c.strip()) for c in self.edit_channels.text().split(",") if c.strip().isdigit()]
-            if not chans:
-                chans = [1, 2, 3, 4]
-        except Exception:
-            chans = [1, 2, 3, 4]
+        ip = self.edit_ip.text().strip()
+        if not ip:
+            raise ValueError("DVR IP address cannot be empty.")
+
+        channels_text = self.edit_channels.text().strip()
+        channel_tokens = channels_text.split(",")
+        if not channel_tokens or any(not token.strip().isdigit() for token in channel_tokens):
+            raise ValueError("Enter monitored channels as comma-separated numbers.")
+        channels = [int(token.strip()) for token in channel_tokens]
+        if any(channel < 1 for channel in channels) or len(set(channels)) != len(channels):
+            raise ValueError("Channels must be positive and cannot be repeated.")
 
         return DVRConfig(
-            ip=self.edit_ip.text().strip(),
-            http_port=int(self.edit_http_port.text().strip() or "80"),
-            rtsp_port=int(self.edit_rtsp_port.text().strip() or "554"),
+            ip=ip,
+            http_port=self._parse_port(self.edit_http_port, "HTTP"),
+            rtsp_port=self._parse_port(self.edit_rtsp_port, "RTSP"),
             username=self.edit_user.text().strip(),
-            password=self.edit_pass.text().strip(),
-            channels=chans
+            password=self.edit_pass.text(),
+            channels=channels,
         )
+
+    @staticmethod
+    def _parse_port(field: QLineEdit, name: str) -> int:
+        try:
+            port = int(field.text().strip())
+        except ValueError as exc:
+            raise ValueError(f"{name} port must be a number between 1 and 65535.") from exc
+        if not 1 <= port <= 65535:
+            raise ValueError(f"{name} port must be a number between 1 and 65535.")
+        return port
+
+    def _validate_and_accept(self):
+        try:
+            self.get_updated_config()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid DVR Settings", str(exc))
+            return
+        self.accept()
 
 
 # ==============================================================================
@@ -793,7 +885,19 @@ class MainWindow(QMainWindow):
         self.resize(1280, 800)
         self.setMinimumSize(800, 500)
 
-        self.config = DVRConfig()
+        self.settings = QtCore.QSettings(
+            QtCore.QSettings.IniFormat,
+            QtCore.QSettings.UserScope,
+            "Hikvision",
+            "CameraViewer",
+        )
+        self.settings.setFallbacksEnabled(False)
+        try:
+            self.config = load_dvr_config(self.settings)
+        except ValueError as exc:
+            self.config = DVRConfig()
+            QMessageBox.warning(self, "Invalid Saved DVR Settings", str(exc))
+
         self.snapshot_dir = Path("./snapshots")
         self.snapshot_dir.mkdir(exist_ok=True)
 
@@ -1271,7 +1375,13 @@ class MainWindow(QMainWindow):
     def _open_settings(self):
         dialog = SettingsDialog(self.config, self)
         if dialog.exec() == QDialog.Accepted:
-            new_config = dialog.get_updated_config()
+            try:
+                new_config = dialog.get_updated_config()
+                save_dvr_config(self.settings, new_config)
+            except (OSError, ValueError) as exc:
+                QMessageBox.critical(self, "Settings Error", f"Could not save DVR settings:\n{exc}")
+                return
+
             self.config = new_config
             self.lbl_status_dvr.setText(f"DVR: {self.config.ip} | User: {self.config.username}")
 
