@@ -99,9 +99,10 @@ Build the x86_64 AppImage with Podman or Docker, `curl`, and `sha256sum`:
 
 The output is `dist/HikvisionCameraViewer-x86_64.AppImage`. The AppImage
 bundles Python and Qt; install FFmpeg on the host for embedded RTSP and video
-recording, and `ffplay` for the separate HQ RTSP player. The build downloads
-and verifies its packaging tools and targets Linux systems with glibc 2.36 or
-newer.
+recording, and `ffplay` for the separate HQ RTSP player. Both Linux packages
+bundle Noto Color Emoji so their emoji-based controls render consistently
+across hosts. The AppImage build downloads and verifies its packaging tools
+and targets Linux systems with glibc 2.36 or newer.
 
 On each push to `main`, [GitHub Actions](./.github/workflows/build-packages.yml)
 builds both packages, automatically generates patch versions starting with
