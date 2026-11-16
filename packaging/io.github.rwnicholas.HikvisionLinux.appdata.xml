@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.rwnicholas.HikvisionLinux</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Hikvision Camera Viewer</name>
+  <summary>View and record Hikvision DVR cameras</summary>
+  <developer id="io.github.rwnicholas">
+    <name>rwnicholas</name>
+  </developer>
+  <description>
+    <p>
+      Monitor Hikvision DVR cameras from a Linux desktop. View HTTP snapshots
+      or embedded RTSP streams, switch between a camera grid and single-camera
+      view, and save snapshots or video recordings.
+    </p>
+    <p>
+      The application can also display motion events from the DVR and open an
+      RTSP stream in ffplay for high-quality playback.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.rwnicholas.HikvisionLinux.desktop</launchable>
+  <icon type="stock">io.github.rwnicholas.HikvisionLinux</icon>
+  <url type="homepage">https://github.com/rwnicholas/hikvision_linux</url>
+  <categories>
+    <category>AudioVideo</category>
+    <category>Video</category>
+  </categories>
+  <keywords>
+    <keyword>camera</keyword>
+    <keyword>DVR</keyword>
+    <keyword>Hikvision</keyword>
+    <keyword>RTSP</keyword>
+    <keyword>surveillance</keyword>
+    <keyword>video</keyword>
+  </keywords>
+  <content_rating type="oars-1.1"/>
+</component>

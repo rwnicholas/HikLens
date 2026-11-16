@@ -70,6 +70,7 @@ python3 cam_viewer.py
 ## 📦 Flatpak
 
 The Flatpak manifest and desktop integration are in `packaging/flatpak/`.
+Both package builds include the shared AppStream metadata from `packaging/`.
 With Flatpak, Flatpak Builder, and the Flathub runtime available, build and
 install the app with:
 

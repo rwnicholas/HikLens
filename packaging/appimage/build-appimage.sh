@@ -140,6 +140,9 @@ run_builder \
         install -Dm644 \
             /src/packaging/appimage/io.github.rwnicholas.HikvisionLinux.desktop \
             "$appdir/io.github.rwnicholas.HikvisionLinux.desktop"
+        install -Dm644 \
+            /src/packaging/io.github.rwnicholas.HikvisionLinux.appdata.xml \
+            "$appdir/usr/share/metainfo/io.github.rwnicholas.HikvisionLinux.appdata.xml"
         install -Dm644 /src/packaging/flatpak/io.github.rwnicholas.HikvisionLinux.svg \
             "$appdir/usr/share/icons/hicolor/scalable/apps/io.github.rwnicholas.HikvisionLinux.svg"
         rsvg-convert -w 256 -h 256 \
