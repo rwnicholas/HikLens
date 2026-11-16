@@ -82,7 +82,6 @@ run_builder \
         apt-get update >/dev/null
         apt-get install -y --no-install-recommends \
             binutils \
-            fonts-noto-color-emoji \
             libdbus-1-3 \
             libegl1 \
             libfontconfig1 \
@@ -148,10 +147,6 @@ run_builder \
         rsvg-convert -w 256 -h 256 \
             /src/packaging/flatpak/io.github.rwnicholas.HikvisionLinux.svg \
             -o "$appdir/.DirIcon"
-        install -Dm644 /usr/share/fonts/truetype/noto/NotoColorEmoji.ttf \
-            "$appdir/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf"
-        install -Dm644 /src/packaging/appimage/fonts.conf \
-            "$appdir/etc/fonts/fonts.conf"
         install -Dm644 /src/LICENSE \
             "$appdir/usr/share/licenses/hikvision-camera-viewer/LICENSE"
         install -Dm644 /usr/share/common-licenses/LGPL-3 \

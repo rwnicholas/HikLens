@@ -8,6 +8,7 @@ import sys
 import os
 import queue
 import threading
+import math
 
 # AMD RX 7800 XT — use VAAPI (radeonsi) for hardware-accelerated decode.
 # Do NOT set QT_FFMPEG_NO_HWACCEL; let Qt/FFmpeg pick VAAPI automatically.
@@ -39,6 +40,35 @@ from PySide6.QtWidgets import (
     QFormLayout, QDialogButtonBox, QStackedWidget, QSplitter,
     QListWidget, QListWidgetItem, QCheckBox
 )
+from PySide6.QtSvg import QSvgRenderer
+
+
+_ICON_SVGS = {
+    "grid": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#cbd5e1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="3" width="8" height="8" rx="1"/><rect x="3" y="13" width="8" height="8" rx="1"/><rect x="13" y="13" width="8" height="8" rx="1"/></svg>',
+    "camera": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#cbd5e1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h3l2-3h6l2 3h3a2 2 0 0 1 2 2v10H2V9a2 2 0 0 1 2-2Z"/><circle cx="12" cy="13" r="3.5"/></svg>',
+    "network": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>',
+    "stream": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 7.8a6 6 0 0 1 0 8.4M4.3 4.3a11 11 0 0 0 0 15.4M19.7 4.3a11 11 0 0 1 0 15.4"/></svg>',
+    "pause": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#cbd5e1" d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg>',
+    "play": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#cbd5e1" d="M6 3.8v16.4L20 12z"/></svg>',
+    "record": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="#ef4444"/></svg>',
+    "stop": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2" fill="#ef4444"/></svg>',
+    "auto": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#fbbf24" d="M13.5 2 5 13h5l-.5 9L19 10h-5z"/></svg>',
+    "max": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#fb923c" d="m12 2 2.8 6.1 6.7.7-5 4.5 1.4 6.6-5.9-3.4-5.9 3.4 1.4-6.6-5-4.5 6.7-.7z"/></svg>',
+    "standard": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8 12 2.5 2.5L16 9"/></svg>',
+    "events": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#cbd5e1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg>',
+    "settings": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#cbd5e1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-1.7 2.9-.2-.1a1.7 1.7 0 0 0-1.8.2l-.2.1h-3.4l-.1-.2a1.7 1.7 0 0 0-1.6-1l-.2.1-3-1.7.1-.2a1.7 1.7 0 0 0-.2-1.8l-.1-.2v-3.4l.2-.1a1.7 1.7 0 0 0 1-1.6l-.1-.2 1.7-3 .2.1a1.7 1.7 0 0 0 1.8-.2l.2-.1h3.4l.1.2a1.7 1.7 0 0 0 1.6 1l.2-.1 3 1.7-.1.2a1.7 1.7 0 0 0 .2 1.8l.1.2v3.4z"/></svg>',
+    "fullscreen": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#cbd5e1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H3v5M16 3h5v5M21 16v5h-5M3 16v5h5"/></svg>',
+}
+
+
+def _make_icon(name: str) -> QIcon:
+    renderer = QSvgRenderer(QtCore.QByteArray(_ICON_SVGS[name].encode("utf-8")))
+    pixmap = QPixmap(20, 20)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    renderer.render(painter)
+    painter.end()
+    return QIcon(pixmap)
 
 
 @dataclass
@@ -65,6 +95,25 @@ class DVRConfig:
 
     def alert_url(self) -> str:
         return f"http://{self.ip}:{self.http_port}/ISAPI/Event/notification/alertStream"
+
+
+@dataclass
+class ViewerState:
+    backend_mode: str = "HTTP"
+    fps: int = 10
+    quality_mode: str = "auto"
+    active_mode: str = "ALL"
+    camera_count: int = 4
+    events_visible: bool = True
+    auto_save_motion: bool = False
+
+
+def camera_grid_dimensions(camera_count: int):
+    if camera_count < 1:
+        raise ValueError("Camera count must be at least one.")
+    columns = math.ceil(math.sqrt(camera_count))
+    rows = math.ceil(camera_count / columns)
+    return rows, columns
 
 
 def load_dvr_config(settings: QtCore.QSettings) -> DVRConfig:
@@ -126,6 +175,63 @@ def save_dvr_config(settings: QtCore.QSettings, config: DVRConfig):
         raise OSError(f"Could not save DVR settings to {settings_path}.")
     if os.name == "posix":
         os.chmod(settings_path, 0o600)
+
+
+def load_viewer_state(
+    settings: QtCore.QSettings, channels: list
+) -> ViewerState:
+    defaults = ViewerState(camera_count=len(channels))
+    try:
+        state = ViewerState(
+            backend_mode=str(settings.value("viewer/backend", defaults.backend_mode)),
+            fps=int(settings.value("viewer/fps", defaults.fps)),
+            quality_mode=str(settings.value("viewer/quality", defaults.quality_mode)),
+            active_mode=str(settings.value("viewer/mode", defaults.active_mode)),
+            camera_count=int(settings.value("viewer/camera_count", defaults.camera_count)),
+            events_visible=settings.value(
+                "viewer/events_visible", defaults.events_visible, type=bool
+            ),
+            auto_save_motion=settings.value(
+                "viewer/auto_save_motion", defaults.auto_save_motion, type=bool
+            ),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Saved viewer state contains invalid values.") from exc
+
+    if state.backend_mode not in {"HTTP", "RTSP"}:
+        raise ValueError("Saved video engine must be HTTP or RTSP.")
+    if state.fps not in {5, 10, 15, 30}:
+        raise ValueError("Saved RTSP speed is invalid.")
+    if state.quality_mode not in {"auto", "max", "standard"}:
+        raise ValueError("Saved quality mode is invalid.")
+    if state.active_mode != "ALL" and state.active_mode not in {
+        str(channel) for channel in channels
+    }:
+        raise ValueError("Saved camera view is not in the monitored channel list.")
+    if not 1 <= state.camera_count <= len(channels):
+        raise ValueError("Saved camera count is outside the monitored channel range.")
+    return state
+
+
+def save_viewer_state(
+    settings: QtCore.QSettings,
+    state: ViewerState,
+    geometry: QtCore.QByteArray,
+    splitter_state: QtCore.QByteArray,
+):
+    settings.setValue("viewer/backend", state.backend_mode)
+    settings.setValue("viewer/fps", state.fps)
+    settings.setValue("viewer/quality", state.quality_mode)
+    settings.setValue("viewer/mode", state.active_mode)
+    settings.setValue("viewer/camera_count", state.camera_count)
+    settings.setValue("viewer/events_visible", state.events_visible)
+    settings.setValue("viewer/auto_save_motion", state.auto_save_motion)
+    settings.setValue("viewer/window_geometry", geometry)
+    settings.setValue("viewer/splitter_state", splitter_state)
+    settings.sync()
+
+    if settings.status() != QtCore.QSettings.NoError:
+        raise OSError(f"Could not save viewer settings to {settings.fileName()}.")
 
 
 # ==============================================================================
@@ -787,7 +893,7 @@ class CameraViewWidget(QFrame):
         self.lbl_status = QLabel("Offline")
         self.lbl_status.setStyleSheet("color: #ef4444; font-size: 11px; font-weight: bold;")
 
-        self.lbl_motion = QLabel("🚨 MOTION")
+        self.lbl_motion = QLabel("MOTION")
         self.lbl_motion.setStyleSheet("""
             color: #ffffff;
             background-color: #dc2626;
@@ -798,7 +904,9 @@ class CameraViewWidget(QFrame):
         """)
         self.lbl_motion.setVisible(False)
 
-        self.btn_snap = QPushButton("📷")
+        self.btn_snap = QPushButton()
+        self.btn_snap.setIcon(_make_icon("camera"))
+        self.btn_snap.setIconSize(QSize(16, 16))
         self.btn_snap.setToolTip("Quick Snapshot (Saved to ./snapshots)")
         self.btn_snap.setFixedSize(26, 22)
         self.btn_snap.setCursor(Qt.PointingHandCursor)
@@ -1038,6 +1146,13 @@ class MainWindow(QMainWindow):
         except ValueError as exc:
             self.config = DVRConfig()
             QMessageBox.warning(self, "Invalid Saved DVR Settings", str(exc))
+        try:
+            self.viewer_state = load_viewer_state(
+                self.settings, self.config.channels
+            )
+        except ValueError as exc:
+            self.viewer_state = ViewerState(camera_count=len(self.config.channels))
+            QMessageBox.warning(self, "Invalid Saved Viewer State", str(exc))
 
         if os.environ.get("FLATPAK_ID"):
             pictures_dir = QStandardPaths.writableLocation(QStandardPaths.PicturesLocation)
@@ -1052,11 +1167,13 @@ class MainWindow(QMainWindow):
         self.recording_channel = None
         self.active_mode = "ALL"  # "ALL", "1", "2", "3", "4"
         self.backend_mode = "HTTP"  # "HTTP" or "RTSP"
+        self.camera_count = len(self.config.channels)
         self.is_paused = False
         self.auto_save_motion = False
 
         self._setup_style()
         self._build_ui()
+        self._restore_viewer_state()
         self._start_threads()
 
     def _setup_style(self):
@@ -1129,43 +1246,70 @@ class MainWindow(QMainWindow):
         # Camera selection dropdown
         toolbar.addWidget(QLabel(" View: "))
         self.combo_cam = QComboBox()
-        self.combo_cam.addItem("🖥️  All Cameras (2x2 Grid)", "ALL")
+        self.combo_cam.addItem(_make_icon("grid"), "Grid View", "ALL")
         for ch in self.config.channels:
-            self.combo_cam.addItem(f"📹  Camera {ch}", str(ch))
+            self.combo_cam.addItem(_make_icon("camera"), f"Camera {ch}", str(ch))
+        self.combo_cam.setIconSize(QSize(16, 16))
         self.combo_cam.currentIndexChanged.connect(self._on_combo_selection)
         toolbar.addWidget(self.combo_cam)
+
+        toolbar.addWidget(QLabel(" Show: "))
+        self.combo_camera_count = QComboBox()
+        for count in range(1, len(self.config.channels) + 1):
+            rows, columns = camera_grid_dimensions(count)
+            label = f"{count} Camera{'s' if count != 1 else ''} ({columns}x{rows})"
+            self.combo_camera_count.addItem(label, count)
+        self.combo_camera_count.setToolTip(
+            "Number of cameras displayed in Grid View"
+        )
+        self.combo_camera_count.setCurrentIndex(
+            self.combo_camera_count.findData(self.camera_count)
+        )
+        self.combo_camera_count.currentIndexChanged.connect(
+            self._on_camera_count_changed
+        )
+        toolbar.addWidget(self.combo_camera_count)
 
         toolbar.addSeparator()
 
         # Backend Engine selector
         toolbar.addWidget(QLabel(" Engine: "))
         self.combo_backend = QComboBox()
-        self.combo_backend.addItem("🌐 HTTP Snapshot (Fast Connect)", "HTTP")
-        self.combo_backend.addItem("📡 Embedded RTSP (ffmpeg/VAAPI)", "RTSP")
+        self.combo_backend.addItem(_make_icon("network"), "HTTP Snapshot (Fast Connect)", "HTTP")
+        self.combo_backend.addItem(_make_icon("stream"), "Embedded RTSP (ffmpeg/VAAPI)", "RTSP")
+        self.combo_backend.setIconSize(QSize(16, 16))
         self.combo_backend.currentIndexChanged.connect(self._on_backend_changed)
         toolbar.addWidget(self.combo_backend)
 
         toolbar.addSeparator()
 
         # Pause / Play button
-        self.btn_pause = QPushButton("⏸️ Pause")
+        self.btn_pause = QPushButton("Pause")
+        self.btn_pause.setIcon(_make_icon("pause"))
+        self.btn_pause.setIconSize(QSize(16, 16))
         self.btn_pause.setCheckable(True)
         self.btn_pause.clicked.connect(self._toggle_pause)
         toolbar.addWidget(self.btn_pause)
 
         # Snapshot button
-        self.btn_snapshot = QPushButton("📸 Snapshot")
+        self.btn_snapshot = QPushButton("Snapshot")
+        self.btn_snapshot.setIcon(_make_icon("camera"))
+        self.btn_snapshot.setIconSize(QSize(16, 16))
         self.btn_snapshot.setToolTip("Save snapshot of current view (Key: S)")
         self.btn_snapshot.clicked.connect(self._take_snapshot)
         toolbar.addWidget(self.btn_snapshot)
 
-        self.btn_record = QPushButton("⏺ Record")
+        self.btn_record = QPushButton("Record")
+        self.btn_record.setIcon(_make_icon("record"))
+        self.btn_record.setIconSize(QSize(16, 16))
         self.btn_record.setToolTip("Record one camera to an MP4 video")
         self.btn_record.clicked.connect(self._toggle_recording)
         toolbar.addWidget(self.btn_record)
 
         # HQ RTSP Player button
-        self.btn_rtsp = QPushButton("🚀 Open HQ RTSP")
+        self.btn_rtsp = QPushButton("Open HQ RTSP")
+        self.btn_rtsp.setIcon(_make_icon("stream"))
+        self.btn_rtsp.setIconSize(QSize(16, 16))
         self.btn_rtsp.setToolTip("Open full-rate hardware stream in ffplay")
         self.btn_rtsp.clicked.connect(self._launch_rtsp)
         toolbar.addWidget(self.btn_rtsp)
@@ -1190,9 +1334,10 @@ class MainWindow(QMainWindow):
         # Resolution Quality selector
         toolbar.addWidget(QLabel(" Quality: "))
         self.combo_quality = QComboBox()
-        self.combo_quality.addItem("⚡ Auto (1080p Focus / 480p Grid)", "auto")
-        self.combo_quality.addItem("🔥 Max (1080p Full HD Always)", "max")
-        self.combo_quality.addItem("💾 Standard (480p Fast)", "standard")
+        self.combo_quality.addItem(_make_icon("auto"), "Auto (1080p Focus / 480p Grid)", "auto")
+        self.combo_quality.addItem(_make_icon("max"), "Max (1080p Full HD Always)", "max")
+        self.combo_quality.addItem(_make_icon("standard"), "Standard (480p Fast)", "standard")
+        self.combo_quality.setIconSize(QSize(16, 16))
         self.combo_quality.currentIndexChanged.connect(self._on_quality_changed)
         toolbar.addWidget(self.combo_quality)
 
@@ -1206,19 +1351,25 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
 
         # Toggle Event Log Drawer
-        self.btn_toggle_log = QPushButton("📜 Events")
+        self.btn_toggle_log = QPushButton("Events")
+        self.btn_toggle_log.setIcon(_make_icon("events"))
+        self.btn_toggle_log.setIconSize(QSize(16, 16))
         self.btn_toggle_log.setCheckable(True)
         self.btn_toggle_log.setChecked(True)
         self.btn_toggle_log.clicked.connect(self._toggle_event_log)
         toolbar.addWidget(self.btn_toggle_log)
 
         # Settings button
-        self.btn_settings = QPushButton("⚙️ Settings")
+        self.btn_settings = QPushButton("Settings")
+        self.btn_settings.setIcon(_make_icon("settings"))
+        self.btn_settings.setIconSize(QSize(16, 16))
         self.btn_settings.clicked.connect(self._open_settings)
         toolbar.addWidget(self.btn_settings)
 
         # Fullscreen button
-        self.btn_fullscreen = QPushButton("⛶ Fullscreen")
+        self.btn_fullscreen = QPushButton("Fullscreen")
+        self.btn_fullscreen.setIcon(_make_icon("fullscreen"))
+        self.btn_fullscreen.setIconSize(QSize(16, 16))
         self.btn_fullscreen.clicked.connect(self._toggle_fullscreen)
         toolbar.addWidget(self.btn_fullscreen)
 
@@ -1237,29 +1388,27 @@ class MainWindow(QMainWindow):
         self.stacked_view = QStackedWidget()
         self.splitter.addWidget(self.stacked_view)
 
-        # PAGE 0: 2x2 Grid View
+        # PAGE 0: Camera Grid View
         self.grid_container = QWidget()
         self.grid_layout = QGridLayout(self.grid_container)
         self.grid_layout.setContentsMargins(0, 0, 0, 0)
         self.grid_layout.setSpacing(8)
 
         # Create camera tiles
-        positions = [(0, 0), (0, 1), (1, 0), (1, 1)]
-        for idx, ch in enumerate(self.config.channels):
+        for ch in self.config.channels:
             tile = CameraViewWidget(ch)
             tile.double_clicked.connect(self._on_tile_double_clicked)
             tile.snapshot_requested.connect(self._save_camera_snapshot)
             self.tiles[ch] = tile
-            r, c = positions[idx % 4]
-            self.grid_layout.addWidget(tile, r, c)
 
         self.stacked_view.addWidget(self.grid_container)
+        self._update_camera_grid()
 
         # PAGE 1: Single Camera View
         self.single_container = QWidget()
         self.single_layout = QVBoxLayout(self.single_container)
         self.single_layout.setContentsMargins(0, 0, 0, 0)
-        self.single_tile = CameraViewWidget(1)
+        self.single_tile = CameraViewWidget(self.config.channels[0])
         self.single_tile.double_clicked.connect(lambda ch: self.switch_mode("ALL"))
         self.single_tile.snapshot_requested.connect(self._save_camera_snapshot)
         self.single_layout.addWidget(self.single_tile)
@@ -1272,7 +1421,7 @@ class MainWindow(QMainWindow):
         log_layout = QVBoxLayout(self.log_panel)
         log_layout.setContentsMargins(0, 0, 0, 0)
 
-        lbl_log = QLabel("🔔 Activity & Motion Log")
+        lbl_log = QLabel("Activity & Motion Log")
         lbl_log.setStyleSheet("font-weight: bold; color: #94a3b8; font-size: 12px; margin-bottom: 4px;")
         log_layout.addWidget(lbl_log)
 
@@ -1295,6 +1444,114 @@ class MainWindow(QMainWindow):
         self.status_bar.addWidget(self.lbl_status_dvr)
         self.status_bar.addPermanentWidget(self.lbl_status_alert)
 
+    def _update_camera_grid(self):
+        rows, columns = camera_grid_dimensions(self.camera_count)
+        self.combo_cam.setItemText(
+            0, f"Grid View ({self.camera_count}, {columns}x{rows})"
+        )
+        for tile in self.tiles.values():
+            self.grid_layout.removeWidget(tile)
+
+        for index, channel in enumerate(self.config.channels):
+            tile = self.tiles[channel]
+            if index >= self.camera_count:
+                tile.hide()
+                continue
+            self.grid_layout.addWidget(tile, index // columns, index % columns)
+            tile.show()
+
+    def _rebuild_camera_views(self):
+        mode = self.active_mode
+        if mode != "ALL" and int(mode) not in self.config.channels:
+            mode = "ALL"
+        self.camera_count = min(self.camera_count, len(self.config.channels))
+
+        for tile in self.tiles.values():
+            self.grid_layout.removeWidget(tile)
+            tile.deleteLater()
+        self.tiles.clear()
+
+        signals_were_blocked = self.combo_cam.blockSignals(True)
+        self.combo_cam.clear()
+        self.combo_cam.addItem(_make_icon("grid"), "Grid View", "ALL")
+        for channel in self.config.channels:
+            self.combo_cam.addItem(
+                _make_icon("camera"), f"Camera {channel}", str(channel)
+            )
+        self.combo_cam.blockSignals(signals_were_blocked)
+
+        signals_were_blocked = self.combo_camera_count.blockSignals(True)
+        self.combo_camera_count.clear()
+        for count in range(1, len(self.config.channels) + 1):
+            rows, columns = camera_grid_dimensions(count)
+            label = f"{count} Camera{'s' if count != 1 else ''} ({columns}x{rows})"
+            self.combo_camera_count.addItem(label, count)
+        self.combo_camera_count.setCurrentIndex(
+            self.combo_camera_count.findData(self.camera_count)
+        )
+        self.combo_camera_count.blockSignals(signals_were_blocked)
+
+        for channel in self.config.channels:
+            tile = CameraViewWidget(channel)
+            tile.double_clicked.connect(self._on_tile_double_clicked)
+            tile.snapshot_requested.connect(self._save_camera_snapshot)
+            self.tiles[channel] = tile
+
+        self.single_tile.channel = (
+            int(mode) if mode != "ALL" else self.config.channels[0]
+        )
+        self.single_tile.lbl_title.setText(
+            f"Camera {self.single_tile.channel} (Enlarged)"
+        )
+        self._update_camera_grid()
+
+        signals_were_blocked = self.combo_cam.blockSignals(True)
+        self.combo_cam.setCurrentIndex(self.combo_cam.findData(mode))
+        self.combo_cam.blockSignals(signals_were_blocked)
+        self.switch_mode(mode)
+
+    def _restore_viewer_state(self):
+        state = self.viewer_state
+        self.backend_mode = state.backend_mode
+        self.camera_count = state.camera_count
+
+        for combo, value in (
+            (self.combo_backend, state.backend_mode),
+            (self.combo_fps, state.fps),
+            (self.combo_quality, state.quality_mode),
+            (self.combo_camera_count, state.camera_count),
+            (self.combo_cam, state.active_mode),
+        ):
+            index = combo.findData(value)
+            if index >= 0:
+                signals_were_blocked = combo.blockSignals(True)
+                combo.setCurrentIndex(index)
+                combo.blockSignals(signals_were_blocked)
+
+        self.combo_fps.setEnabled(self.backend_mode == "RTSP")
+        self.chk_auto_motion.setChecked(state.auto_save_motion)
+        self.btn_toggle_log.setChecked(state.events_visible)
+        self.log_panel.setVisible(state.events_visible)
+        self._update_camera_grid()
+        self.switch_mode(state.active_mode)
+
+        geometry = self.settings.value("viewer/window_geometry")
+        if geometry is not None and (
+            not isinstance(geometry, QtCore.QByteArray)
+            or not self.restoreGeometry(geometry)
+        ):
+            QMessageBox.warning(
+                self, "Window State", "The saved window size could not be restored."
+            )
+        splitter_state = self.settings.value("viewer/splitter_state")
+        if splitter_state is not None and (
+            not isinstance(splitter_state, QtCore.QByteArray)
+            or not self.splitter.restoreState(splitter_state)
+        ):
+            QMessageBox.warning(
+                self, "Window State", "The saved panel layout could not be restored."
+            )
+
     def _start_threads(self):
         target_fps = self.combo_fps.currentData()
         res_mode = self.combo_quality.currentData()
@@ -1308,13 +1565,23 @@ class MainWindow(QMainWindow):
         # Start Camera Workers / Players based on selected backend
         for ch in self.config.channels:
             is_focused = (self.active_mode == str(ch))
+            is_active = (
+                ch == self.recording_channel
+                or is_focused
+                or (
+                    self.active_mode == "ALL"
+                    and ch in self.config.channels[:self.camera_count]
+                )
+            )
             if self.backend_mode == "RTSP":
                 worker = RTSPCameraPlayer(ch, self.config, self)
+                worker.set_active(is_active)
                 worker.set_target_fps(target_fps)
                 worker.set_resolution_mode(res_mode)
                 worker.set_focused(is_focused)
             else:
                 worker = CameraWorker(ch, self.config, self)
+                worker.set_active(is_active)
                 worker.set_target_fps(5)
                 worker.set_resolution_mode(res_mode)
                 worker.set_focused(is_focused)
@@ -1406,7 +1673,7 @@ class MainWindow(QMainWindow):
             self.single_tile.trigger_motion()
 
         # Add to event log list
-        item = QListWidgetItem(f"[{time_str}] 🚨 Motion on Camera {channel}")
+        item = QListWidgetItem(f"[{time_str}] Motion on Camera {channel}")
         item.setForeground(QtGui.QBrush(QColor("#f87171")))
         self.event_list.insertItem(0, item)
 
@@ -1422,10 +1689,30 @@ class MainWindow(QMainWindow):
         mode = self.combo_cam.itemData(index)
         self.switch_mode(mode)
 
+    def _on_camera_count_changed(self, index: int):
+        camera_count = self.combo_camera_count.itemData(index)
+        if camera_count is None:
+            return
+        self.camera_count = int(camera_count)
+        self._update_camera_grid()
+        if self.active_mode == "ALL":
+            self._sync_worker_activity()
+
     def _on_quality_changed(self, index: int):
         q_mode = self.combo_quality.itemData(index)
         for w in self.workers.values():
             w.set_resolution_mode(q_mode)
+
+    def _sync_worker_activity(self):
+        visible_channels = set(self.config.channels[:self.camera_count])
+        for channel, worker in self.workers.items():
+            is_focused = self.active_mode == str(channel)
+            worker.set_focused(is_focused)
+            worker.set_active(
+                channel == self.recording_channel
+                or is_focused
+                or (self.active_mode == "ALL" and channel in visible_channels)
+            )
 
     def switch_mode(self, mode: str):
         self.active_mode = mode
@@ -1435,10 +1722,6 @@ class MainWindow(QMainWindow):
             idx = self.combo_cam.findData("ALL")
             if idx >= 0 and self.combo_cam.currentIndex() != idx:
                 self.combo_cam.setCurrentIndex(idx)
-            # Activate all workers and set focused false
-            for w in self.workers.values():
-                w.set_focused(False)
-                w.set_active(True)
         else:
             ch = int(mode)
             self.single_tile.channel = ch
@@ -1448,15 +1731,12 @@ class MainWindow(QMainWindow):
             idx = self.combo_cam.findData(mode)
             if idx >= 0 and self.combo_cam.currentIndex() != idx:
                 self.combo_cam.setCurrentIndex(idx)
-            # Focus on selected camera, keep focused active
-            for c_id, w in self.workers.items():
-                is_this = (c_id == ch)
-                w.set_focused(is_this)
-                w.set_active(is_this or c_id == self.recording_channel)
+        self._sync_worker_activity()
 
     def _toggle_pause(self):
         self.is_paused = self.btn_pause.isChecked()
-        self.btn_pause.setText("▶️ Resume" if self.is_paused else "⏸️ Pause")
+        self.btn_pause.setText("Resume" if self.is_paused else "Pause")
+        self.btn_pause.setIcon(_make_icon("play" if self.is_paused else "pause"))
         for w in self.workers.values():
             w.set_paused(self.is_paused)
 
@@ -1483,10 +1763,10 @@ class MainWindow(QMainWindow):
     def _toggle_fullscreen(self):
         if self.isFullScreen():
             self.showNormal()
-            self.btn_fullscreen.setText("⛶ Fullscreen")
+            self.btn_fullscreen.setText("Fullscreen")
         else:
             self.showFullScreen()
-            self.btn_fullscreen.setText("⛶ Exit Fullscreen")
+            self.btn_fullscreen.setText("Exit Fullscreen")
 
     def _save_camera_snapshot(self, channel: int, prefix: str = None):
         img = None
@@ -1521,15 +1801,19 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(f"Snapshot saved ({img.width()}x{img.height()}): {fname.name}", 4000)
 
         # Log to events
-        item = QListWidgetItem(f"[{datetime.now().strftime('%H:%M:%S')}] 📸 Saved {fname.name}")
+        item = QListWidgetItem(f"[{datetime.now().strftime('%H:%M:%S')}] Saved {fname.name}")
         item.setForeground(QtGui.QBrush(QColor("#38bdf8")))
         self.event_list.insertItem(0, item)
 
     def _take_snapshot(self):
         if self.active_mode == "ALL":
-            for ch in self.config.channels:
+            for ch in self.config.channels[:self.camera_count]:
                 self._save_camera_snapshot(ch)
-            self.status_bar.showMessage("Saved snapshots for all cameras!", 4000)
+            noun = "camera" if self.camera_count == 1 else "cameras"
+            self.status_bar.showMessage(
+                f"Saved snapshots for {self.camera_count} displayed {noun}!",
+                4000,
+            )
         else:
             self._save_camera_snapshot(int(self.active_mode))
 
@@ -1547,11 +1831,12 @@ class MainWindow(QMainWindow):
             return
 
         if self.active_mode == "ALL":
+            channels_to_record = self.config.channels[:self.camera_count]
             selected_channel, accepted = QInputDialog.getItem(
                 self,
                 "Record Video",
                 "Camera to record:",
-                [str(channel) for channel in self.config.channels],
+                [str(channel) for channel in channels_to_record],
                 0,
                 False,
             )
@@ -1599,6 +1884,7 @@ class MainWindow(QMainWindow):
         self.recorder.finished.connect(self._on_recorder_finished)
 
         self.btn_record.setText("Preparing...")
+        self.btn_record.setIcon(_make_icon("record"))
         self.btn_record.setEnabled(False)
         self.btn_pause.setEnabled(False)
         self.btn_settings.setEnabled(False)
@@ -1614,7 +1900,8 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _on_recording_started(self):
-        self.btn_record.setText("⏹ Stop Recording")
+        self.btn_record.setText("Stop Recording")
+        self.btn_record.setIcon(_make_icon("stop"))
         self.btn_record.setEnabled(True)
 
     @Slot(str, int)
@@ -1623,7 +1910,7 @@ class MainWindow(QMainWindow):
         if dropped_frames:
             message += f" ({dropped_frames} frames skipped because the encoder was busy)"
         self.status_bar.showMessage(message, 6000)
-        item = QListWidgetItem(f"[{datetime.now().strftime('%H:%M:%S')}] 🎥 {message}")
+        item = QListWidgetItem(f"[{datetime.now().strftime('%H:%M:%S')}] {message}")
         item.setForeground(QtGui.QBrush(QColor("#38bdf8")))
         self.event_list.insertItem(0, item)
 
@@ -1637,16 +1924,22 @@ class MainWindow(QMainWindow):
             return
         self.recorder = None
         self.recording_channel = None
-        self.btn_record.setText("⏺ Record")
+        self.btn_record.setText("Record")
+        self.btn_record.setIcon(_make_icon("record"))
         self.btn_record.setEnabled(True)
         self.btn_pause.setEnabled(True)
         self.btn_settings.setEnabled(True)
         self.combo_backend.setEnabled(True)
         self.combo_fps.setEnabled(self.backend_mode == "RTSP")
+        self._sync_worker_activity()
 
     def _launch_rtsp(self):
         # Check if active is single or all
-        ch = 1 if self.active_mode == "ALL" else int(self.active_mode)
+        ch = (
+            self.config.channels[0]
+            if self.active_mode == "ALL"
+            else int(self.active_mode)
+        )
         rtsp_url = self.config.rtsp_url(ch, stream=1)
 
         # Launch ffplay. Use VAAPI hw-decode via codec name (ffplay 9.x API).
@@ -1678,14 +1971,15 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "Settings Error", f"Could not save DVR settings:\n{exc}")
                 return
 
-            self.config = new_config
-            self.lbl_status_dvr.setText(f"DVR: {self.config.ip} | User: {self.config.username}")
-
-            # Restart workers with new config
+            channels_changed = new_config.channels != self.config.channels
             for w in self.workers.values():
                 w.stop()
-            self.alert_worker.stop()
+            self._stop_alert_worker()
             self.workers.clear()
+            self.config = new_config
+            self.lbl_status_dvr.setText(f"DVR: {self.config.ip} | User: {self.config.username}")
+            if channels_changed:
+                self._rebuild_camera_views()
             self._start_threads()
             QMessageBox.information(self, "Settings Saved", "DVR settings updated and connections refreshed!")
 
@@ -1718,6 +2012,27 @@ class MainWindow(QMainWindow):
             super().keyPressEvent(event)
 
     def closeEvent(self, event):
+        state = ViewerState(
+            backend_mode=self.backend_mode,
+            fps=int(self.combo_fps.currentData()),
+            quality_mode=str(self.combo_quality.currentData()),
+            active_mode=self.active_mode,
+            camera_count=self.camera_count,
+            events_visible=self.btn_toggle_log.isChecked(),
+            auto_save_motion=self.chk_auto_motion.isChecked(),
+        )
+        try:
+            save_viewer_state(
+                self.settings,
+                state,
+                self.saveGeometry(),
+                self.splitter.saveState(),
+            )
+        except OSError as exc:
+            QMessageBox.warning(
+                self, "Viewer State Error", f"Could not save viewer state:\n{exc}"
+            )
+
         if self.recorder is not None:
             self.recorder.stop()
         for w in self.workers.values():

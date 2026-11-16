@@ -27,7 +27,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Build AppImage
         run: CONTAINER_ENGINE=docker ./packaging/appimage/build-appimage.sh
@@ -38,7 +38,7 @@ jobs:
         run: mv dist/HikvisionCameraViewer-x86_64.AppImage "dist/HikvisionCameraViewer-${VERSION}-x86_64.AppImage"
 
       - name: Upload AppImage
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: HikvisionCameraViewer-${{ needs.version.outputs.version }}-AppImage
           path: dist/HikvisionCameraViewer-${{ needs.version.outputs.version }}-x86_64.AppImage
@@ -52,7 +52,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Flatpak tools
         run: |
@@ -79,7 +79,7 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
 
       - name: Upload Flatpak bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: HikvisionCameraViewer-${{ needs.version.outputs.version }}-Flatpak
           path: dist/HikvisionCameraViewer-${{ needs.version.outputs.version }}.flatpak
@@ -95,7 +95,7 @@ jobs:
       contents: write
     steps:
       - name: Download package artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: HikvisionCameraViewer-${{ needs.version.outputs.version }}-*
           path: release-assets

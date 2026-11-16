@@ -3,5 +3,4 @@ set -eu
 
 APPDIR="${APPDIR:-$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)}"
 export PATH="$APPDIR/usr/bin${PATH:+:$PATH}"
-export FONTCONFIG_FILE="${FONTCONFIG_FILE:-$APPDIR/etc/fonts/fonts.conf}"
 exec "$APPDIR/usr/lib/hikvision-camera-viewer/HikvisionCameraViewer" "$@"

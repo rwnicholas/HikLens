@@ -24,11 +24,6 @@ modules:
       - install -Dm644 io.github.rwnicholas.HikvisionLinux.desktop /app/share/applications/io.github.rwnicholas.HikvisionLinux.desktop
       - install -Dm644 io.github.rwnicholas.HikvisionLinux.svg /app/share/icons/hicolor/scalable/apps/io.github.rwnicholas.HikvisionLinux.svg
       - install -Dm644 io.github.rwnicholas.HikvisionLinux.appdata.xml /app/share/metainfo/io.github.rwnicholas.HikvisionLinux.appdata.xml
-      - mkdir -p font-package
-      - ar p fonts-noto-color-emoji.deb data.tar.xz | tar -xJf - -C font-package ./usr/share/fonts/truetype/noto/NotoColorEmoji.ttf ./usr/share/doc/fonts-noto-color-emoji/copyright
-      - install -Dm644 font-package/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf /app/share/fonts/truetype/noto/NotoColorEmoji.ttf
-      - install -Dm644 font-package/usr/share/doc/fonts-noto-color-emoji/copyright /app/share/licenses/hikvision-linux/fonts-noto-color-emoji.copyright
-      - install -Dm644 fonts.conf /app/etc/fonts/fonts.conf
     sources:
       - type: file
         path: ../../cam_viewer.py
@@ -42,9 +37,3 @@ modules:
         path: io.github.rwnicholas.HikvisionLinux.svg
       - type: file
         path: ../io.github.rwnicholas.HikvisionLinux.appdata.xml
-      - type: file
-        path: fonts.conf
-      - type: file
-        url: https://deb.debian.org/debian/pool/main/f/fonts-noto-color-emoji/fonts-noto-color-emoji_2.042-0+deb12u1_all.deb
-        sha256: a5ab0f69c7938423862320d9aca5dd187b3fd879d6a9a57dd52e17c3fa8d2751
-        dest-filename: fonts-noto-color-emoji.deb
