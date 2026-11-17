@@ -21,12 +21,21 @@ modules:
       - python3 -m pip install --disable-pip-version-check --no-cache-dir --target=/app/lib/hikvision-python -r requirements.txt
       - install -Dm755 hikvision-linux.sh /app/bin/hikvision-linux
       - install -Dm644 cam_viewer.py /app/share/hikvision-linux/cam_viewer.py
+      - install -Dm644 capture_backends.py /app/share/hikvision-linux/capture_backends.py
+      - install -Dm644 hikvision_backend.py /app/share/hikvision-linux/hikvision_backend.py
+      - install -Dm644 hikvision_sdk.py /app/share/hikvision-linux/hikvision_sdk.py
       - install -Dm644 io.github.rwnicholas.HikvisionLinux.desktop /app/share/applications/io.github.rwnicholas.HikvisionLinux.desktop
       - install -Dm644 io.github.rwnicholas.HikvisionLinux.svg /app/share/icons/hicolor/scalable/apps/io.github.rwnicholas.HikvisionLinux.svg
       - install -Dm644 io.github.rwnicholas.HikvisionLinux.appdata.xml /app/share/metainfo/io.github.rwnicholas.HikvisionLinux.appdata.xml
     sources:
       - type: file
         path: ../../cam_viewer.py
+      - type: file
+        path: ../../capture_backends.py
+      - type: file
+        path: ../../hikvision_backend.py
+      - type: file
+        path: ../../hikvision_sdk.py
       - type: file
         path: ../../requirements.txt
       - type: file

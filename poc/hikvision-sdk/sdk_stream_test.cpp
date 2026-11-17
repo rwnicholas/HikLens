@@ -1,0 +1,645 @@
+#include <HCNetSDK.h>
+#include <LinuxPlayM4.h>
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <charconv>
+#include <chrono>
+#include <csignal>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <iostream>
+#include <mutex>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <unistd.h>
+
+namespace {
+
+volatile std::sig_atomic_t g_keep_running = 1;
+std::mutex g_diagnostics_mutex;
+
+void handle_signal(int) {
+    g_keep_running = 0;
+}
+
+struct TestState {
+    std::array<char, 16> key{};
+    int player_key_length{128};
+    int frame_output_fd{-1};
+    int target_fps{10};
+    std::mutex frame_output_mutex;
+    std::chrono::steady_clock::time_point last_output_time{};
+    std::atomic<int> player_port{-1};
+    std::atomic<int> player_error{0};
+    std::atomic<unsigned int> player_error_code{0};
+    std::atomic<int> sdk_init_status{0};
+    std::atomic<int> login_status{0};
+    std::atomic<int> aes_key_status{0};
+    std::atomic<int> sdk_key_status{0};
+    std::atomic<int> preview_status{0};
+    std::atomic<int> playctrl_status{0};
+    std::atomic<int> decoder_key_status{0};
+    std::atomic<unsigned int> sdk_error_code{0};
+    std::atomic<int> decoder_error_code{0};
+    std::atomic<std::uint64_t> decoded_frames{0};
+    std::atomic<std::uint64_t> system_headers{0};
+    std::atomic<std::uint64_t> stream_chunks{0};
+    std::atomic<std::uint64_t> stream_bytes{0};
+    std::atomic<std::uint64_t> input_failures{0};
+    std::atomic<int> width{0};
+    std::atomic<int> height{0};
+    std::atomic<bool> encrypt_info_seen{false};
+    std::atomic<long> video_encrypt_type{-1};
+    std::atomic<long> audio_encrypt_type{-1};
+    std::atomic<long> decoder_key_set{-1};
+    PLAYM4_HWND play_window{0};
+};
+
+const char* status_name(int status) {
+    if (status < 0) {
+        return "failed";
+    }
+    return status == 1 ? "ok" : "pending";
+}
+
+const char* decoder_error_name(int error) {
+    switch (error) {
+        case 1:
+            return "PlayM4_GetPort failed";
+        case 2:
+            return "PlayM4_SetStreamOpenMode failed";
+        case 3:
+            return "PlayM4_SetSecretKey failed";
+        case 4:
+            return "PlayM4_SetEncryptTypeCallBack failed";
+        case 5:
+            return "PlayM4_OpenStream failed";
+        case 6:
+            return "PlayM4_SetDecCallBackExMend failed";
+        case 7:
+            return "PlayM4_Play failed";
+        case 8:
+            return "PlayM4_InputData failed";
+        case 9:
+            return "No decoded frames received within 15 seconds";
+        case 10:
+            return "PlayCtrl returned an unsupported decoded frame format";
+        case 11:
+            return "Could not write a decoded frame to the application";
+        case 12:
+            return "PlayM4_SetDecodeFrameType failed";
+        default:
+            return "";
+    }
+}
+
+void emit_diagnostics(const TestState& state, bool helper_mode) {
+    if (!helper_mode) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_diagnostics_mutex);
+    std::cerr << "HIKVISION_DIAGNOSTIC {"
+              << "\"sdk_init\":\"" << status_name(state.sdk_init_status.load())
+              << "\",\"login\":\"" << status_name(state.login_status.load())
+              << "\",\"aes_key_retrieval\":\""
+              << status_name(state.aes_key_status.load())
+              << "\",\"sdk_secret_key\":\""
+              << status_name(state.sdk_key_status.load())
+              << "\",\"preview\":\""
+              << status_name(state.preview_status.load())
+              << "\",\"encryption_type\":"
+              << state.video_encrypt_type.load()
+              << ",\"playctrl_initialization\":\""
+              << status_name(state.playctrl_status.load())
+              << "\",\"stream_chunks\":" << state.stream_chunks.load()
+              << ",\"stream_bytes\":" << state.stream_bytes.load()
+              << ",\"decoder_key_configuration\":\""
+              << status_name(state.decoder_key_status.load())
+              << "\",\"decoder_key_set\":"
+              << state.decoder_key_set.load()
+              << ",\"frames_decoded\":" << state.decoded_frames.load()
+              << ",\"input_failures\":" << state.input_failures.load()
+              << ",\"frame_width\":" << state.width.load()
+              << ",\"frame_height\":" << state.height.load()
+              << ",\"sdk_error_code\":" << state.sdk_error_code.load()
+              << ",\"playctrl_error_code\":"
+              << state.player_error_code.load()
+              << ",\"decoder_error\":\""
+              << decoder_error_name(state.decoder_error_code.load())
+              << "\"}" << std::endl;
+}
+
+std::string env_or(const char* name, const char* fallback = "") {
+    const char* value = std::getenv(name);
+    return value == nullptr ? fallback : value;
+}
+
+bool parse_integer(const char* name, long minimum, long maximum, long fallback,
+                   long& result) {
+    const char* value = std::getenv(name);
+    if (value == nullptr || *value == '\0') {
+        result = fallback;
+        return true;
+    }
+
+    const std::string_view text(value);
+    const auto parsed =
+        std::from_chars(text.data(), text.data() + text.size(), result);
+    return parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size() &&
+           result >= minimum && result <= maximum;
+}
+
+template <std::size_t N>
+bool copy_field(char (&destination)[N], const std::string& value) {
+    if (value.empty() || value.size() >= N) {
+        return false;
+    }
+    std::memcpy(destination, value.data(), value.size());
+    destination[value.size()] = '\0';
+    return true;
+}
+
+int hex_value(char value) {
+    if (value >= '0' && value <= '9') {
+        return value - '0';
+    }
+    if (value >= 'a' && value <= 'f') {
+        return value - 'a' + 10;
+    }
+    if (value >= 'A' && value <= 'F') {
+        return value - 'A' + 10;
+    }
+    return -1;
+}
+
+bool parse_key_hex(const std::string& text, std::array<char, 16>& key) {
+    if (text.size() != key.size() * 2) {
+        return false;
+    }
+    for (std::size_t index = 0; index < key.size(); ++index) {
+        const int high = hex_value(text[index * 2]);
+        const int low = hex_value(text[index * 2 + 1]);
+        if (high < 0 || low < 0) {
+            return false;
+        }
+        key[index] = static_cast<char>((high << 4) | low);
+    }
+    return true;
+}
+
+bool get_stream_key(LONG user_id, std::array<char, 16>& key,
+                    std::string& source) {
+    constexpr std::array<LONG, 3> channel_candidates{-1, 0, 1};
+    DWORD last_error = 0;
+    for (const LONG channel : channel_candidates) {
+        NET_DVR_AES_KEY_INFO key_info{};
+        DWORD bytes_returned = 0;
+        if (NET_DVR_GetDVRConfig(user_id, NET_DVR_GET_AES_KEY, channel,
+                                 &key_info, sizeof(key_info), &bytes_returned)) {
+            if (bytes_returned < key.size()) {
+                std::cerr << "NET_DVR_GET_AES_KEY returned only "
+                          << bytes_returned << " bytes\n";
+                return false;
+            }
+            std::memcpy(key.data(), key_info.sAESKey, key.size());
+            source = "NET_DVR_GET_AES_KEY";
+            std::cout << "AES key retrieved with channel argument " << channel
+                      << " (value withheld)\n";
+            return true;
+        }
+        last_error = NET_DVR_GetLastError();
+    }
+
+    const std::string key_hex = env_or("HIKVISION_AES_KEY_HEX");
+    if (!key_hex.empty() && parse_key_hex(key_hex, key)) {
+        source = "HIKVISION_AES_KEY_HEX";
+        std::cout << "Using supplied 16-byte AES key (value withheld)\n";
+        return true;
+    }
+
+    std::cerr << "Could not retrieve the stream key with NET_DVR_GET_AES_KEY "
+                 "(last SDK error "
+              << last_error
+              << "); set HIKVISION_AES_KEY_HEX to exactly 32 hex characters "
+                 "if you have the raw 16-byte key\n";
+    return false;
+}
+
+void set_player_error(TestState* state, int error, int port = -1) {
+    int expected = 0;
+    if (state->player_error.compare_exchange_strong(expected, error)) {
+        if (port >= 0) {
+            state->player_error_code.store(PlayM4_GetLastError(port));
+        }
+        state->playctrl_status.store(-1);
+        if (error == 3) {
+            state->decoder_key_status.store(-1);
+        }
+        state->decoder_error_code.store(error);
+    }
+}
+
+void CALLBACK encrypt_type_callback(int, ENCRYPT_INFO* info, void* user,
+                                    int) {
+    if (info == nullptr || user == nullptr) {
+        return;
+    }
+    auto* state = static_cast<TestState*>(user);
+    state->video_encrypt_type.store(info->nVideoEncryptType);
+    state->audio_encrypt_type.store(info->nAudioEncryptType);
+    state->decoder_key_set.store(info->nSetSecretKey);
+    state->encrypt_info_seen.store(true);
+}
+
+bool write_all(int fd, const void* data, std::size_t size) {
+    const auto* bytes = static_cast<const char*>(data);
+    while (size > 0) {
+        const ssize_t written = ::write(fd, bytes, size);
+        if (written < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return false;
+        }
+        bytes += written;
+        size -= static_cast<std::size_t>(written);
+    }
+    return true;
+}
+
+void CALLBACK decoded_frame_callback(int, char* buffer, int size,
+                                     FRAME_INFO* frame_info,
+                                     void* user, int) {
+    if (frame_info == nullptr || user == nullptr || buffer == nullptr ||
+        size <= 0) {
+        return;
+    }
+    auto* state = static_cast<TestState*>(user);
+    state->width.store(frame_info->nWidth);
+    state->height.store(frame_info->nHeight);
+    state->decoded_frames.fetch_add(1);
+
+    if (state->frame_output_fd >= 0) {
+        const std::uint64_t expected_size =
+            static_cast<std::uint64_t>(frame_info->nWidth) *
+            static_cast<std::uint64_t>(frame_info->nHeight) * 4U;
+        if (frame_info->nType != T_RGB32 || expected_size !=
+                                               static_cast<std::uint64_t>(size)) {
+            state->decoder_error_code.store(10);
+            return;
+        }
+        std::lock_guard<std::mutex> lock(state->frame_output_mutex);
+        const auto now = std::chrono::steady_clock::now();
+        const auto interval = std::chrono::milliseconds(
+            std::max(1, 1000 / state->target_fps));
+        if (state->last_output_time.time_since_epoch().count() != 0 &&
+            now - state->last_output_time < interval) {
+            return;
+        }
+        state->last_output_time = now;
+        struct FrameHeader {
+            char magic[4];
+            std::uint32_t width;
+            std::uint32_t height;
+            std::uint32_t size;
+        };
+        static_assert(sizeof(FrameHeader) == 16);
+        const FrameHeader header{{'H', 'I', 'K', 'F'},
+                                 static_cast<std::uint32_t>(frame_info->nWidth),
+                                 static_cast<std::uint32_t>(frame_info->nHeight),
+                                 static_cast<std::uint32_t>(size)};
+        if (!write_all(state->frame_output_fd, &header, sizeof(header)) ||
+            !write_all(state->frame_output_fd, buffer,
+                       static_cast<std::size_t>(size))) {
+            state->decoder_error_code.store(11);
+            return;
+        }
+    }
+}
+
+void CALLBACK stream_callback(LONG, DWORD data_type, BYTE* buffer,
+                              DWORD size, void* user) {
+    if (user == nullptr || buffer == nullptr || size == 0) {
+        return;
+    }
+    auto* state = static_cast<TestState*>(user);
+
+    if (data_type == NET_DVR_SYSHEAD) {
+        state->system_headers.fetch_add(1);
+        if (state->player_port.load() >= 0 || state->player_error.load() != 0) {
+            return;
+        }
+
+        int port = -1;
+        if (!PlayM4_GetPort(&port)) {
+            set_player_error(state, 1);
+            return;
+        }
+        if (!PlayM4_SetStreamOpenMode(port, STREAME_REALTIME)) {
+            set_player_error(state, 2, port);
+            PlayM4_FreePort(port);
+            return;
+        }
+        if (!PlayM4_SetSecretKey(port, ENCRYPT_AES_10R_VIDEO,
+                                 state->key.data(),
+                                 state->player_key_length)) {
+            set_player_error(state, 3, port);
+            PlayM4_FreePort(port);
+            return;
+        }
+        state->decoder_key_status.store(1);
+        if (!PlayM4_SetEncryptTypeCallBack(
+                port, 1, encrypt_type_callback, state)) {
+            set_player_error(state, 4, port);
+            PlayM4_FreePort(port);
+            return;
+        }
+        if (!PlayM4_OpenStream(port, buffer, size, 4U * 1024U * 1024U)) {
+            set_player_error(state, 5, port);
+            PlayM4_FreePort(port);
+            return;
+        }
+        if (!PlayM4_SetDecodeFrameType(port, T_RGB32)) {
+            set_player_error(state, 12, port);
+            PlayM4_CloseStream(port);
+            PlayM4_FreePort(port);
+            return;
+        }
+        if (!PlayM4_SetDecCallBackExMend(
+                port, decoded_frame_callback, nullptr, 0, state)) {
+            set_player_error(state, 6, port);
+            PlayM4_CloseStream(port);
+            PlayM4_FreePort(port);
+            return;
+        }
+        state->player_port.store(port);
+        if (!PlayM4_Play(port, state->play_window)) {
+            set_player_error(state, 7, port);
+            state->player_port.store(-1);
+            PlayM4_CloseStream(port);
+            PlayM4_FreePort(port);
+        } else {
+            state->playctrl_status.store(1);
+        }
+        return;
+    }
+
+    const int port = state->player_port.load();
+    if (port < 0 || state->player_error.load() != 0) {
+        return;
+    }
+    if (data_type == NET_DVR_STREAMDATA ||
+        data_type == NET_DVR_AUDIOSTREAMDATA) {
+        state->stream_chunks.fetch_add(1);
+        state->stream_bytes.fetch_add(size);
+        if (!PlayM4_InputData(port, buffer, size)) {
+            state->input_failures.fetch_add(1);
+            set_player_error(state, 8, port);
+        }
+    }
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    if (argc == 2 && std::string_view(argv[1]) == "--check-sdk") {
+        if (!NET_DVR_Init()) {
+            std::cerr << "NET_DVR_Init failed: " << NET_DVR_GetLastError()
+                      << '\n';
+            return 3;
+        }
+        int decoder_port = -1;
+        if (!PlayM4_GetPort(&decoder_port)) {
+            std::cerr << "PlayM4_GetPort failed\n";
+            NET_DVR_Cleanup();
+            return 4;
+        }
+        const BOOL released_port = PlayM4_FreePort(decoder_port);
+        const BOOL cleaned_up = NET_DVR_Cleanup();
+        if (!released_port || !cleaned_up) {
+            std::cerr << "SDK initialization cleanup failed\n";
+            return 5;
+        }
+        std::cout << "HCNetSDK initialization and PlayCtrl port allocation ok\n";
+        return 0;
+    }
+    const char* frame_fd_value = std::getenv("HIKVISION_FRAME_FD");
+    const bool helper_mode = frame_fd_value != nullptr;
+    std::signal(SIGTERM, handle_signal);
+    std::signal(SIGINT, handle_signal);
+    std::signal(SIGPIPE, SIG_IGN);
+
+    const std::string host = env_or("HIKVISION_HOST", "192.168.101.8");
+    const std::string username = env_or("HIKVISION_USERNAME");
+    const std::string password = env_or("HIKVISION_PASSWORD");
+    long port = 8000;
+    long channel = 1;
+    long run_seconds = helper_mode ? 0 : 15;
+    long player_key_length = 128;
+    long target_fps = 10;
+    long play_window = 0;
+    long frame_fd = -1;
+    if (username.empty() || password.empty()) {
+        std::cerr << "Set HIKVISION_USERNAME and HIKVISION_PASSWORD\n";
+        return 2;
+    }
+    if (!parse_integer("HIKVISION_PORT", 1, 65535, 8000, port) ||
+        !parse_integer("HIKVISION_CHANNEL", 1, 256, 1, channel) ||
+        !parse_integer("HIKVISION_RUN_SECONDS", helper_mode ? 0 : 1,
+                       86400, helper_mode ? 0 : 15, run_seconds) ||
+        !parse_integer("HIKVISION_PLAYM4_KEY_LENGTH", 16, 128, 128,
+                       player_key_length) ||
+        (player_key_length != 16 && player_key_length != 128) ||
+        !parse_integer("HIKVISION_TARGET_FPS", 1, 30, 10, target_fps) ||
+        !parse_integer("HIKVISION_PLAYM4_WINDOW", 0, 0xffffffffL, 0,
+                       play_window) ||
+        (helper_mode &&
+         (!parse_integer("HIKVISION_FRAME_FD", 0, 0x7fffffffL, -1,
+                         frame_fd) ||
+          frame_fd < 0))) {
+        std::cerr << "Invalid SDK parameter environment value\n";
+        return 2;
+    }
+
+    TestState state;
+    state.frame_output_fd = static_cast<int>(frame_fd);
+    state.target_fps = static_cast<int>(target_fps);
+    state.play_window = static_cast<PLAYM4_HWND>(play_window);
+
+    NET_DVR_SetLogToFile(0, nullptr, TRUE);
+    if (!NET_DVR_Init()) {
+        state.sdk_init_status.store(-1);
+        state.sdk_error_code.store(NET_DVR_GetLastError());
+        emit_diagnostics(state, helper_mode);
+        std::cerr << "NET_DVR_Init failed: " << NET_DVR_GetLastError() << '\n';
+        return 3;
+    }
+    state.sdk_init_status.store(1);
+    emit_diagnostics(state, helper_mode);
+    NET_DVR_SetConnectTime(5000, 3);
+    NET_DVR_SetReconnect(10000, TRUE);
+
+    NET_DVR_USER_LOGIN_INFO login_info{};
+    NET_DVR_DEVICEINFO_V40 device_info{};
+    if (!copy_field(login_info.sDeviceAddress, host) ||
+        !copy_field(login_info.sUserName, username) ||
+        !copy_field(login_info.sPassword, password)) {
+        state.login_status.store(-1);
+        emit_diagnostics(state, helper_mode);
+        std::cerr << "Host or credential exceeds the SDK field size\n";
+        NET_DVR_Cleanup();
+        return 2;
+    }
+    login_info.wPort = static_cast<WORD>(port);
+    login_info.bUseAsynLogin = FALSE;
+
+    const LONG user_id = NET_DVR_Login_V40(&login_info, &device_info);
+    if (user_id < 0) {
+        state.login_status.store(-1);
+        state.sdk_error_code.store(NET_DVR_GetLastError());
+        emit_diagnostics(state, helper_mode);
+        std::cerr << "NET_DVR_Login_V40 failed: " << NET_DVR_GetLastError()
+                  << '\n';
+        NET_DVR_Cleanup();
+        return 4;
+    }
+    state.login_status.store(1);
+    emit_diagnostics(state, helper_mode);
+    std::cout << "login=ok\n";
+
+    std::array<char, 16> key{};
+    std::string key_source;
+    if (!get_stream_key(user_id, key, key_source)) {
+        state.aes_key_status.store(-1);
+        state.sdk_error_code.store(NET_DVR_GetLastError());
+        emit_diagnostics(state, helper_mode);
+        NET_DVR_Logout(user_id);
+        NET_DVR_Cleanup();
+        return 5;
+    }
+    state.aes_key_status.store(1);
+    emit_diagnostics(state, helper_mode);
+    if (!NET_DVR_SetSDKSecretKey(user_id, key.data())) {
+        state.sdk_key_status.store(-1);
+        state.sdk_error_code.store(NET_DVR_GetLastError());
+        emit_diagnostics(state, helper_mode);
+        std::cerr << "NET_DVR_SetSDKSecretKey failed: "
+                  << NET_DVR_GetLastError() << '\n';
+        NET_DVR_Logout(user_id);
+        NET_DVR_Cleanup();
+        return 6;
+    }
+    state.sdk_key_status.store(1);
+    emit_diagnostics(state, helper_mode);
+    std::cout << "SDK decryption key configured from " << key_source << '\n';
+
+    state.key = key;
+    state.player_key_length = static_cast<int>(player_key_length);
+    state.target_fps = static_cast<int>(target_fps);
+    NET_DVR_PREVIEWINFO preview_info{};
+    preview_info.hPlayWnd = 0;
+    preview_info.lChannel = static_cast<LONG>(channel);
+    preview_info.dwStreamType = 0;
+    preview_info.dwLinkMode = 0;
+    preview_info.bBlocked = FALSE;
+    preview_info.byProtoType = 0;
+
+    const LONG preview_handle = NET_DVR_RealPlay_V40(
+        user_id, &preview_info, stream_callback, &state);
+    if (preview_handle < 0) {
+        state.preview_status.store(-1);
+        state.sdk_error_code.store(NET_DVR_GetLastError());
+        emit_diagnostics(state, helper_mode);
+        std::cerr << "NET_DVR_RealPlay_V40 failed: "
+                  << NET_DVR_GetLastError() << '\n';
+        NET_DVR_Logout(user_id);
+        NET_DVR_Cleanup();
+        return 7;
+    }
+
+    state.preview_status.store(1);
+    emit_diagnostics(state, helper_mode);
+    std::cout << "preview=started channel=" << channel
+              << " stream=main duration_seconds=" << run_seconds << '\n';
+    const auto start_time = std::chrono::steady_clock::now();
+    auto last_diagnostics_time = start_time;
+    if (helper_mode) {
+        while (g_keep_running) {
+            const auto now = std::chrono::steady_clock::now();
+            if (state.player_error.load() != 0 ||
+                state.decoder_error_code.load() != 0) {
+                break;
+            }
+            if (state.decoded_frames.load() == 0 &&
+                now - start_time >= std::chrono::seconds(15)) {
+                state.decoder_error_code.store(9);
+                emit_diagnostics(state, true);
+                break;
+            }
+            if (run_seconds > 0 &&
+                now - start_time >= std::chrono::seconds(run_seconds)) {
+                break;
+            }
+            if (now - last_diagnostics_time >= std::chrono::seconds(1)) {
+                emit_diagnostics(state, true);
+                last_diagnostics_time = now;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    } else {
+        std::this_thread::sleep_for(std::chrono::seconds(run_seconds));
+    }
+
+    const BOOL stopped = NET_DVR_StopRealPlay(preview_handle);
+    const int player_port = state.player_port.exchange(-1);
+    unsigned int last_player_error = 0;
+    if (player_port >= 0) {
+        last_player_error = PlayM4_GetLastError(player_port);
+        PlayM4_Stop(player_port);
+        PlayM4_CloseStream(player_port);
+        PlayM4_FreePort(player_port);
+    }
+    const BOOL logged_out = NET_DVR_Logout(user_id);
+    const BOOL cleaned_up = NET_DVR_Cleanup();
+    emit_diagnostics(state, helper_mode);
+
+    if (!stopped || !logged_out || !cleaned_up) {
+        std::cerr << "SDK cleanup reported an error\n";
+    }
+
+    const std::uint64_t frames = state.decoded_frames.load();
+    std::cout << "decoded_frames=" << frames
+              << " dimensions=" << state.width.load() << 'x'
+              << state.height.load()
+              << " system_headers=" << state.system_headers.load()
+              << " stream_chunks=" << state.stream_chunks.load()
+              << " stream_bytes=" << state.stream_bytes.load()
+              << " input_failures=" << state.input_failures.load() << '\n';
+    std::cout << "PlayCtrl last_error=" << last_player_error << '\n';
+    if (state.encrypt_info_seen.load()) {
+        std::cout << "PlayCtrl encryption metadata: video="
+                  << state.video_encrypt_type.load()
+                  << " audio=" << state.audio_encrypt_type.load()
+                  << " decoder_key_set=" << state.decoder_key_set.load()
+                  << '\n';
+    }
+    if (state.player_error.load() != 0) {
+        std::cerr << "PlayCtrl setup/input stage "
+                  << state.player_error.load() << " failed; error "
+                  << state.player_error_code.load() << '\n';
+        return 8;
+    }
+    if (state.decoder_error_code.load() == 10 ||
+        state.decoder_error_code.load() == 11) {
+        return 11;
+    }
+    if (frames == 0) {
+        std::cerr << "No decoded frames received\n";
+        return 9;
+    }
+    return stopped && logged_out && cleaned_up ? 0 : 10;
+}

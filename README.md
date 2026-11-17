@@ -6,10 +6,16 @@ A modern desktop application built in Python (PySide6) to monitor Hikvision DVR 
 
 ## 🌟 Key Features
 
-1. **Dual Video Engines (HTTP Snapshot vs Embedded RTSP)**:
+1. **Selectable Video Engines (HTTP, Embedded RTSP, or Hikvision SDK)**:
    - **`HTTP Snapshot (5 FPS)`**: Uses persistent HTTP Digest sessions to grab frames with zero buffering. Highly stable across all codecs (including H.265+).
    - **`Embedded RTSP (Selectable FPS)`**: Connects directly to the DVR's RTSP hardware stream and embeds video in the app tiles. The **Speed** selector limits the displayed frame rate in this mode.
-   - Easily switch between engines on the fly from the **Engine** dropdown on the toolbar. The Speed selector is disabled for HTTP.
+   - RTSP/FFmpeg remains the default backend; existing saved backend choices
+     are preserved. Switch engines from the **Engine** dropdown on the toolbar.
+     The Speed selector is disabled for HTTP and Hikvision capture.
+   - **`Hikvision SDK (encrypted stream)`** is an optional Linux backend that
+     uses the separately installed official HCNetSDK and PlayCtrl package.
+     Its decryption status is reported explicitly; no frame is displayed unless
+     PlayCtrl actually decodes one.
 
 2. **Flexible Camera Selection**:
    - Click **Cameras** on the toolbar to choose the configured cameras shown in Grid View with a checklist.
@@ -129,6 +135,52 @@ set it to your DVR's address before connecting. HTTP and RTSP ports default to
 
 The password is stored locally in the user's application settings and is not
 encrypted. On Linux, the settings file is restricted to the current user.
+
+### Optional Hikvision Linux SDK backend
+
+The HTTP and RTSP/FFmpeg backends remain available and do not require vendor
+libraries. RTSP/FFmpeg remains the default. To use the optional Hikvision
+backend, obtain a Linux HCNetSDK package directly from Hikvision and extract it
+outside this source tree. On x86-64, Device Network SDK_Linux64 V6.1.11.40
+build 20260922 was validated for the standalone POC; other releases and
+architectures must match your host and be tested with their own headers and
+libraries.
+
+In the extracted SDK directory, build the small helper against that package:
+
+```bash
+make -C poc/hikvision-sdk helper \
+  SDK_ROOT="$HOME/Downloads/EN-HCNetSDKV6.1.11.40_build20260922_linux64"
+```
+
+The helper is installed to
+`~/.local/lib/hikvision-camera-viewer/hikvision_stream_helper`, not committed
+or bundled. In **Settings**, set the Hikvision SDK Directory to the extracted
+SDK root (the directory containing `lib/`, `incEn/`, and `QtDemo/`; also
+configurable with `HIKVISION_SDK_DIR`) and confirm the DVR SDK port, normally
+8000. The viewer checks the host/SDK ELF architecture, required libraries,
+and runs a local HCNetSDK initialization / PlayCtrl allocation check before
+starting capture. The backend reports missing or incompatible dependencies
+instead of falling back to RTSP.
+
+PlayCtrl runs in a separate helper process with a headless/surfaceless
+environment so its EGL settings cannot change the Qt application's Wayland or
+X11 session. The current DVR test successfully authenticated, retrieved a
+stream key, configured the HCNetSDK secret key, started preview, and delivered
+encrypted stream chunks to PlayCtrl. **It produced zero decoded frames.**
+Consequently this is an integration of the capture and diagnostic pipeline,
+not a verified decryption solution; the application reports a clear failure
+instead of displaying black frames or silently switching backends. See the
+[standalone SDK POC notes](./poc/hikvision-sdk/README.md) for tested results.
+
+Hikvision SDK and PlayCtrl are proprietary vendor components. Obtain them
+through Hikvision and review the package's license and redistribution terms.
+This project does not ship, download, or redistribute their binaries. The
+Flatpak sandbox does not grant access to arbitrary host SDK directories; use a
+native installation or AppImage for the external SDK backend unless you
+deliberately grant the Flatpak access to the separately installed SDK. The
+existing HTTP and RTSP features remain usable without those permissions or
+libraries.
 
 ## License
 

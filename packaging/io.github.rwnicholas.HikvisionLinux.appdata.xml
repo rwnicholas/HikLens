@@ -10,13 +10,20 @@
   </developer>
   <description>
     <p>
-      Monitor Hikvision DVR cameras from a Linux desktop. View HTTP snapshots
-      or embedded RTSP streams, switch between a camera grid and single-camera
-      view, and save snapshots or video recordings.
+      Monitor Hikvision DVR cameras from a Linux desktop. View HTTP snapshots,
+      embedded RTSP streams, or (with a separately installed official Linux
+      SDK) an experimental Hikvision encrypted-stream backend. Switch between a
+      camera grid and single-camera view, and save snapshots or video
+      recordings.
     </p>
     <p>
       The application can also display motion events from the DVR and open an
       RTSP stream in ffplay for high-quality playback.
+    </p>
+    <p>
+      The optional Hikvision SDK is proprietary and is not included. Encrypted
+      stream decoding is experimental and may not produce video frames on all
+      DVR models or firmware versions.
     </p>
   </description>
   <launchable type="desktop-id">io.github.rwnicholas.HikvisionLinux.desktop</launchable>

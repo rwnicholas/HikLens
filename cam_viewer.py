@@ -9,6 +9,7 @@ import os
 import queue
 import threading
 import math
+from urllib.parse import quote
 
 # AMD RX 7800 XT — use VAAPI (radeonsi) for hardware-accelerated decode.
 # Do NOT set QT_FFMPEG_NO_HWACCEL; let Qt/FFmpeg pick VAAPI automatically.
@@ -41,6 +42,9 @@ from PySide6.QtWidgets import (
     QListWidget, QListWidgetItem, QCheckBox
 )
 from PySide6.QtSvg import QSvgRenderer
+
+from capture_backends import CaptureBackend, create_capture_backend
+from hikvision_backend import HikvisionCameraPlayer
 
 
 _ICON_SVGS = {
@@ -111,6 +115,8 @@ class DVRConfig:
     username: str = os.getenv("DVR_USERNAME", "")
     password: str = os.getenv("DVR_PASSWORD", "")
     channels: list = None
+    sdk_port: int = 8000
+    sdk_directory: str = os.getenv("HIKVISION_SDK_DIR", "")
 
     def __post_init__(self):
         if self.channels is None:
@@ -123,7 +129,15 @@ class DVRConfig:
 
     def rtsp_url(self, channel: int, stream: int = 1) -> str:
         # stream 1 = main stream (high res), stream 2 = sub stream (smooth grid)
-        return f"rtsp://{self.username}:{self.password}@{self.ip}:{self.rtsp_port}/Streaming/Channels/{channel}0{stream}"
+        credentials = ""
+        if self.username or self.password:
+            username = quote(self.username, safe="")
+            password = quote(self.password, safe="")
+            credentials = f"{username}:{password}@"
+        return (
+            f"rtsp://{credentials}{self.ip}:{self.rtsp_port}"
+            f"/Streaming/Channels/{channel}0{stream}"
+        )
 
     def alert_url(self) -> str:
         return f"http://{self.ip}:{self.http_port}/ISAPI/Event/notification/alertStream"
@@ -131,7 +145,7 @@ class DVRConfig:
 
 @dataclass
 class ViewerState:
-    backend_mode: str = "HTTP"
+    backend_mode: str = "RTSP"
     fps: int = 10
     quality_mode: str = "auto"
     active_mode: str = "ALL"
@@ -191,9 +205,13 @@ def load_dvr_config(settings: QtCore.QSettings) -> DVRConfig:
         ip=ip,
         http_port=read_port("dvr/http_port", defaults.http_port),
         rtsp_port=read_port("dvr/rtsp_port", defaults.rtsp_port),
+        sdk_port=read_port("dvr/sdk_port", defaults.sdk_port),
         username=username,
         password=password,
         channels=channels,
+        sdk_directory=str(
+            settings.value("dvr/sdk_directory", defaults.sdk_directory) or ""
+        ).strip(),
     )
 
 
@@ -208,6 +226,8 @@ def save_dvr_config(settings: QtCore.QSettings, config: DVRConfig):
     settings.setValue("dvr/ip", config.ip)
     settings.setValue("dvr/http_port", config.http_port)
     settings.setValue("dvr/rtsp_port", config.rtsp_port)
+    settings.setValue("dvr/sdk_port", config.sdk_port)
+    settings.setValue("dvr/sdk_directory", config.sdk_directory)
     settings.setValue("dvr/username", config.username)
     settings.setValue("dvr/password", config.password)
     settings.setValue("dvr/channels", ",".join(map(str, config.channels)))
@@ -272,8 +292,8 @@ def load_viewer_state(
     except (TypeError, ValueError) as exc:
         raise ValueError("Saved viewer state contains invalid values.") from exc
 
-    if state.backend_mode not in {"HTTP", "RTSP"}:
-        raise ValueError("Saved video engine must be HTTP or RTSP.")
+    if state.backend_mode not in {"HTTP", "RTSP", "HIKVISION"}:
+        raise ValueError("Saved video engine is not supported.")
     if state.fps not in {5, 10, 15, 30}:
         raise ValueError("Saved RTSP speed is invalid.")
     if state.quality_mode not in {"auto", "max", "standard"}:
@@ -620,12 +640,13 @@ class RTSPCameraPlayer(QThread):
 
             cmd = self._build_cmd(rtsp_url)
             try:
-                self._proc = subprocess.Popen(
+                proc = subprocess.Popen(
                     cmd,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     bufsize=0,
                 )
+                self._proc = proc
             except FileNotFoundError:
                 self.status_changed.emit(self.channel, "ffmpeg not found", False)
                 self._log_error("ffmpeg executable not found")
@@ -644,7 +665,7 @@ class RTSPCameraPlayer(QThread):
             def _read_stdout():
                 try:
                     while True:
-                        chunk = self._proc.stdout.read(32768)
+                        chunk = proc.stdout.read(32768)
                         if not chunk:
                             break
                         stdout_q.put(chunk)
@@ -655,19 +676,20 @@ class RTSPCameraPlayer(QThread):
 
             def _read_stderr():
                 try:
-                    for line in self._proc.stderr:
+                    for line in proc.stderr:
                         stderr_lines.append(line)
                 except Exception:
                     pass
 
             _th.Thread(target=_read_stdout, daemon=True).start()
-            _th.Thread(target=_read_stderr, daemon=True).start()
+            stderr_reader = _th.Thread(target=_read_stderr, daemon=True)
+            stderr_reader.start()
 
             buf = b""
             last_data_time = time.time()
-            # Give ffmpeg up to 12 s to connect & produce first frame
-            CONNECT_TIMEOUT = 12.0
-            IDLE_TIMEOUT    =  8.0   # max silence once streaming started
+            # Allow RTSP negotiation and decoder startup before reconnecting.
+            CONNECT_TIMEOUT = 18.0
+            IDLE_TIMEOUT    = 18.0
             got_first_frame = False
             failure_message = None
 
@@ -682,16 +704,20 @@ class RTSPCameraPlayer(QThread):
                     idle = time.time() - last_data_time
                     limit = CONNECT_TIMEOUT if not got_first_frame else IDLE_TIMEOUT
                     if idle > limit:
-                        last_err = (stderr_lines[-1].decode(errors="replace").strip()
-                                    if stderr_lines else "no frames / timeout")
+                        last_err = self._sanitize_error(
+                            stderr_lines[-1].decode(errors="replace").strip()
+                            if stderr_lines
+                            else "no frames / timeout"
+                        )
                         self.status_changed.emit(self.channel,
                                                  f"RTSP err: {last_err[:64]}", False)
                         failure_message = f"RTSP stream failed; reconnecting: {last_err}"
                         break
                     # Also bail if ffmpeg already exited
-                    if self._proc.poll() is not None and stdout_q.empty():
-                        last_err = (stderr_lines[-1].decode(errors="replace").strip()
-                                    if stderr_lines else "ffmpeg exited")
+                    if proc.poll() is not None and stdout_q.empty():
+                        last_err = self._process_exit_reason(
+                            proc, stderr_lines, stderr_reader
+                        )
                         self.status_changed.emit(self.channel,
                                                  f"RTSP err: {last_err[:64]}", False)
                         failure_message = f"RTSP stream failed; reconnecting: {last_err}"
@@ -699,7 +725,13 @@ class RTSPCameraPlayer(QThread):
                     continue
 
                 if chunk is None:        # stdout EOF sentinel
-                    failure_message = "RTSP stream ended; reconnecting"
+                    last_err = self._process_exit_reason(
+                        proc, stderr_lines, stderr_reader
+                    )
+                    self.status_changed.emit(
+                        self.channel, f"RTSP err: {last_err[:64]}", False
+                    )
+                    failure_message = f"RTSP stream ended; reconnecting: {last_err}"
                     break
 
                 last_data_time = time.time()
@@ -740,6 +772,25 @@ class RTSPCameraPlayer(QThread):
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+    @staticmethod
+    def _process_exit_reason(proc, stderr_lines: list, stderr_reader) -> str:
+        try:
+            proc.wait(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            pass
+        stderr_reader.join(timeout=0.5)
+        if stderr_lines:
+            details = " | ".join(
+                line.decode(errors="replace").strip()
+                for line in stderr_lines[-12:]
+                if line.strip()
+            )
+            return RTSPCameraPlayer._sanitize_error(details)[-1800:]
+        returncode = proc.poll()
+        if returncode is not None:
+            return f"ffmpeg exited with code {returncode}"
+        return "ffmpeg closed its output without an error"
+
     def _pick_stream(self) -> int:
         """Main stream (1) for focused/max; sub-stream (2) for grid."""
         if self._is_focused or self._resolution_mode in ("max",):
@@ -755,8 +806,10 @@ class RTSPCameraPlayer(QThread):
         """
         return [
             "ffmpeg",
-            "-loglevel", "error",        # capture errors to stderr pipe
+            "-hide_banner",
+            "-loglevel", "verbose",
             "-rtsp_transport", "tcp",
+            "-timeout", "15000000",      # RTSP socket I/O timeout in microseconds
             "-fflags", "nobuffer+discardcorrupt",
             "-flags", "low_delay",
             "-i", rtsp_url,
@@ -792,11 +845,16 @@ class RTSPCameraPlayer(QThread):
         if proc.stderr:
             proc.stderr.close()
 
+    @staticmethod
+    def _sanitize_error(message: str) -> str:
+        return re.sub(r"rtsp://\S+", "RTSP stream", message, flags=re.IGNORECASE)
+
     def _log_error(self, message: str):
         if self._error_logged:
             return
-        safe_message = re.sub(r"rtsp://\S+", "RTSP stream", message, flags=re.IGNORECASE)
-        self.log_event.emit(self.channel, "error", safe_message)
+        self.log_event.emit(
+            self.channel, "error", self._sanitize_error(message)
+        )
         self._error_logged = True
 
     def _calc_fps(self):
@@ -1139,12 +1197,25 @@ class SettingsDialog(QDialog):
         self.edit_ip = QLineEdit(config.ip)
         self.edit_http_port = QLineEdit(str(config.http_port))
         self.edit_rtsp_port = QLineEdit(str(config.rtsp_port))
+        self.edit_sdk_port = QLineEdit(str(config.sdk_port))
         self.edit_http_port.setValidator(QtGui.QIntValidator(1, 65535, self))
         self.edit_rtsp_port.setValidator(QtGui.QIntValidator(1, 65535, self))
+        self.edit_sdk_port.setValidator(QtGui.QIntValidator(1, 65535, self))
         self.edit_user = QLineEdit(config.username)
         self.edit_pass = QLineEdit(config.password)
         self.edit_pass.setEchoMode(QLineEdit.Password)
         self.edit_channels = QLineEdit(", ".join(map(str, config.channels)))
+        self.edit_sdk_directory = QLineEdit(config.sdk_directory)
+        self.edit_sdk_directory.setPlaceholderText(
+            "Auto-detect or set HIKVISION_SDK_DIR"
+        )
+        btn_browse_sdk_directory = QPushButton("Browse...")
+        btn_browse_sdk_directory.clicked.connect(self._browse_sdk_directory)
+        sdk_directory_row = QWidget()
+        sdk_directory_layout = QHBoxLayout(sdk_directory_row)
+        sdk_directory_layout.setContentsMargins(0, 0, 0, 0)
+        sdk_directory_layout.addWidget(self.edit_sdk_directory)
+        sdk_directory_layout.addWidget(btn_browse_sdk_directory)
         self.edit_artifact_directory = QLineEdit(str(artifact_directory))
         btn_browse_artifact_directory = QPushButton("Browse...")
         btn_browse_artifact_directory.clicked.connect(
@@ -1159,15 +1230,19 @@ class SettingsDialog(QDialog):
         form.addRow("DVR IP Address:", self.edit_ip)
         form.addRow("HTTP ISAPI Port:", self.edit_http_port)
         form.addRow("RTSP Port:", self.edit_rtsp_port)
+        form.addRow("Hikvision SDK Port:", self.edit_sdk_port)
         form.addRow("Username:", self.edit_user)
         form.addRow("Password:", self.edit_pass)
         form.addRow("Monitored Channels:", self.edit_channels)
+        form.addRow("Hikvision SDK Directory:", sdk_directory_row)
         form.addRow("Save snapshots and recordings to:", artifact_directory_row)
 
         layout.addLayout(form)
 
         storage_note = QLabel(
-            "Settings are saved locally for this user. The password is not encrypted."
+            "Settings are saved locally for this user. The password is not encrypted. "
+            "The optional Hikvision SDK is proprietary, must be obtained separately, "
+            "and is not bundled with this application."
         )
         storage_note.setWordWrap(True)
         layout.addWidget(storage_note)
@@ -1185,6 +1260,15 @@ class SettingsDialog(QDialog):
         )
         if directory:
             self.edit_artifact_directory.setText(directory)
+
+    def _browse_sdk_directory(self):
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "Select Hikvision Linux SDK Directory",
+            self.edit_sdk_directory.text(),
+        )
+        if directory:
+            self.edit_sdk_directory.setText(directory)
 
     def get_artifact_directory(self) -> Path:
         directory = self.edit_artifact_directory.text().strip()
@@ -1209,9 +1293,11 @@ class SettingsDialog(QDialog):
             ip=ip,
             http_port=self._parse_port(self.edit_http_port, "HTTP"),
             rtsp_port=self._parse_port(self.edit_rtsp_port, "RTSP"),
+            sdk_port=self._parse_port(self.edit_sdk_port, "SDK"),
             username=self.edit_user.text().strip(),
             password=self.edit_pass.text(),
             channels=channels,
+            sdk_directory=self.edit_sdk_directory.text().strip(),
         )
 
     @staticmethod
@@ -1312,12 +1398,12 @@ class MainWindow(QMainWindow):
         ).expanduser().resolve()
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
 
-        self.workers = {}
+        self.workers: dict[int, CaptureBackend] = {}
         self.tiles = {}
         self.recorder = None
         self.recording_channel = None
         self.active_mode = "ALL"  # "ALL", "1", "2", "3", "4"
-        self.backend_mode = "HTTP"  # "HTTP" or "RTSP"
+        self.backend_mode = "HTTP"
         self.selected_channels = list(self.viewer_state.visible_channels)
         self.is_paused = False
         self.auto_save_motion = False
@@ -1428,6 +1514,15 @@ class MainWindow(QMainWindow):
         self.combo_backend = QComboBox()
         self.combo_backend.addItem(_make_icon("network"), "HTTP Snapshot (Fast Connect)", "HTTP")
         self.combo_backend.addItem(_make_icon("stream"), "Embedded RTSP (ffmpeg/VAAPI)", "RTSP")
+        self.combo_backend.addItem(
+            _make_icon("stream"),
+            "Hikvision SDK (encrypted stream)",
+            "HIKVISION",
+        )
+        self.combo_backend.setToolTip(
+            "Hikvision SDK requires the separately obtained Linux SDK and a "
+            "locally built stream helper."
+        )
         self.combo_backend.setIconSize(QSize(16, 16))
         self.combo_backend.currentIndexChanged.connect(self._on_backend_changed)
         toolbar.addWidget(self.combo_backend)
@@ -1730,18 +1825,24 @@ class MainWindow(QMainWindow):
                     and ch in self.selected_channels
                 )
             )
+            worker = create_capture_backend(
+                self.backend_mode,
+                ch,
+                self.config,
+                self,
+                http_backend=CameraWorker,
+                rtsp_backend=RTSPCameraPlayer,
+                hikvision_backend=HikvisionCameraPlayer,
+            )
+            worker.set_active(is_active)
+            worker.set_focused(is_focused)
             if self.backend_mode == "RTSP":
-                worker = RTSPCameraPlayer(ch, self.config, self)
-                worker.set_active(is_active)
                 worker.set_target_fps(target_fps)
-                worker.set_resolution_mode(res_mode)
-                worker.set_focused(is_focused)
+            elif self.backend_mode == "HIKVISION":
+                worker.set_target_fps(10)
             else:
-                worker = CameraWorker(ch, self.config, self)
-                worker.set_active(is_active)
                 worker.set_target_fps(5)
-                worker.set_resolution_mode(res_mode)
-                worker.set_focused(is_focused)
+            worker.set_resolution_mode(res_mode)
 
             worker.frame_ready.connect(self._on_frame_ready)
             worker.status_changed.connect(self._on_worker_status)
