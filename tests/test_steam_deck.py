@@ -109,6 +109,13 @@ class SteamDeckIntegrationTests(unittest.TestCase):
             parsed_again = parse_shortcuts_vdf(vdf_file.read_bytes())
             self.assertEqual(len(parsed_again), 2)
 
+            # Also supports an explicit steam_dir path (e.g. chosen via portal file dialog in Flatpak)
+            explicit_updated = register_steam_shortcut(
+                steam_dir=home / ".local/share/Steam",
+                env={"FLATPAK_ID": "io.github.rwnicholas.HikvisionLinux"},
+            )
+            self.assertEqual(explicit_updated, [vdf_file.resolve()])
+
     def test_gamepad_event_decoder_maps_buttons_and_axes(self):
         reader = LinuxGamepadReader()
         # Button A pressed (type=1, number=0, value=1)

@@ -1385,6 +1385,24 @@ class SettingsDialog(QDialog):
     def _add_to_steam_library(self):
         try:
             updated_paths = register_steam_shortcut()
+        except FileNotFoundError:
+            default_steam_dir = str(Path.home() / ".local/share/Steam")
+            selected_dir = QFileDialog.getExistingDirectory(
+                self,
+                "Select Steam Directory (~/.local/share/Steam or userdata)",
+                default_steam_dir,
+            )
+            if not selected_dir:
+                return
+            try:
+                updated_paths = register_steam_shortcut(steam_dir=selected_dir)
+            except Exception as exc:
+                QMessageBox.critical(
+                    self,
+                    "Steam Shortcut Error",
+                    f"Could not register Non-Steam shortcut:\n{exc}",
+                )
+                return
         except Exception as exc:
             QMessageBox.critical(
                 self,

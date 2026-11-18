@@ -364,28 +364,76 @@ def resolve_steam_launch_command(
     )
 
 
-def find_steam_userdata_dirs(home_dir: Path | None = None) -> list[Path]:
+def _collect_userdata_config_dirs(userdata: Path, seen: set[Path], config_dirs: list[Path]):
+    try:
+        children = sorted(userdata.iterdir())
+    except OSError:
+        return
+    for user_dir in children:
+        if not user_dir.is_dir() or not user_dir.name.isdigit() or user_dir.name == "0":
+            continue
+        resolved = (user_dir / "config").resolve()
+        if resolved not in seen:
+            seen.add(resolved)
+            config_dirs.append(resolved)
+
+
+def find_steam_userdata_dirs(
+    home_dir: Path | None = None,
+    steam_dir: str | os.PathLike[str] | None = None,
+) -> list[Path]:
     """Find Steam userdata/<id>/config directories on Linux / SteamOS."""
-    home = (home_dir or Path.home()).expanduser()
-    steam_roots = [
-        home / ".local/share/Steam",
-        home / ".steam/steam",
-        home / ".steam/root",
-        home / ".var/app/com.valvesoftware.Steam/.local/share/Steam",
-    ]
     seen: set[Path] = set()
     config_dirs: list[Path] = []
+
+    if steam_dir:
+        custom = Path(steam_dir).expanduser()
+        if custom.name == "config" and custom.parent.name.isdigit():
+            resolved = custom.resolve()
+            return [resolved]
+        if custom.name == "userdata" and custom.is_dir():
+            _collect_userdata_config_dirs(custom, seen, config_dirs)
+            if config_dirs:
+                return config_dirs
+        if (custom / "userdata").is_dir():
+            _collect_userdata_config_dirs(custom / "userdata", seen, config_dirs)
+            if config_dirs:
+                return config_dirs
+        if custom.name.isdigit() and custom.parent.name == "userdata":
+            return [(custom / "config").resolve()]
+
+    home = (home_dir or Path.home()).expanduser()
+    candidate_homes = [home]
+    if home_dir is None:
+        for deck_home in (Path("/home/deck"), Path("/var/home/deck")):
+            if deck_home not in candidate_homes and deck_home.is_dir():
+                candidate_homes.append(deck_home)
+
+    steam_roots: list[Path] = []
+    env_steam = os.environ.get("STEAM_DIR", "").strip()
+    if env_steam:
+        steam_roots.append(Path(env_steam).expanduser())
+    if home_dir is None:
+        xdg_data_home = os.environ.get("XDG_DATA_HOME", "").strip()
+        if xdg_data_home:
+            steam_roots.append(Path(xdg_data_home).expanduser() / "Steam")
+
+    for base_home in candidate_homes:
+        steam_roots.extend(
+            [
+                base_home / ".local/share/Steam",
+                base_home / ".steam/steam",
+                base_home / ".steam/root",
+                base_home / ".steam/debian-installation",
+                base_home / ".var/app/com.valvesoftware.Steam/.local/share/Steam",
+                base_home / ".var/app/com.valvesoftware.Steam/.steam/steam",
+            ]
+        )
+
     for steam_root in steam_roots:
         userdata = steam_root / "userdata"
-        if not userdata.is_dir():
-            continue
-        for user_dir in sorted(userdata.iterdir()):
-            if not user_dir.is_dir() or not user_dir.name.isdigit() or user_dir.name == "0":
-                continue
-            resolved = (user_dir / "config").resolve()
-            if resolved not in seen:
-                seen.add(resolved)
-                config_dirs.append(resolved)
+        if userdata.is_dir():
+            _collect_userdata_config_dirs(userdata, seen, config_dirs)
     return config_dirs
 
 
@@ -393,17 +441,29 @@ def register_steam_shortcut(
     appname: str = "Hikvision Camera Viewer",
     project_root: Path | None = None,
     home_dir: Path | None = None,
+    steam_dir: str | os.PathLike[str] | None = None,
     env: dict[str, str] | None = None,
 ) -> list[Path]:
     """Add or update Hikvision Camera Viewer in Steam's Non-Steam shortcuts.vdf for all local Steam users.
 
     Returns the list of modified shortcuts.vdf paths.
     """
-    config_dirs = find_steam_userdata_dirs(home_dir=home_dir)
+    environment = os.environ if env is None else env
+    config_dirs = find_steam_userdata_dirs(
+        home_dir=home_dir,
+        steam_dir=steam_dir,
+    )
     if not config_dirs:
+        flatpak_id = environment.get("FLATPAK_ID", "").strip()
+        if flatpak_id:
+            raise FileNotFoundError(
+                "Steam's userdata directory is not accessible inside the Flatpak sandbox.\n\n"
+                "Choose your ~/.local/share/Steam directory in the file dialog, or grant access with:\n"
+                f"flatpak override --user --filesystem=xdg-data/Steam:rw {flatpak_id}"
+            )
         raise FileNotFoundError(
             "No Steam userdata directory was found (~/.local/share/Steam/userdata). "
-            "Log into Steam at least once before adding a shortcut."
+            "Select your Steam folder (e.g. ~/.local/share/Steam) to register the shortcut."
         )
 
     exe, start_dir, launch_options, icon_path = resolve_steam_launch_command(

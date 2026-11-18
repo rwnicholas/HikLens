@@ -12,6 +12,8 @@ finish-args:
   - --device=dri
   - --filesystem=xdg-pictures
   - --filesystem=xdg-download:ro
+  - --filesystem=xdg-data/Steam:rw
+  - --filesystem=~/.steam:rw
 modules:
   - name: hikvision-linux
     buildsystem: simple
