@@ -55,13 +55,28 @@ A modern desktop application built in Python (PySide6) to monitor Hikvision DVR 
 7. **Interactive Hotkeys**:
    - `0` or `G`: Switch to Grid View
    - `1`, `2`, `3`, `4`: Switch to Camera 1, 2, 3, 4
-   - `Double-Click`: Zoom in on clicked camera / Zoom out to grid
+   - `Arrow Keys` / `PageUp` / `PageDown`: Move camera selection in Grid View or cycle cameras
+   - `Enter` / `Double-Click`: Zoom in on selected camera / Zoom out to grid
    - `Space`: Pause / Resume stream
    - `S`: Take snapshot
    - `R`: Start / stop video recording
    - `P`: Open DVR Recordings Playback dialog
    - `F` or `F11`: Fullscreen toggle
    - `Esc`: Return from single camera to grid, or exit fullscreen
+
+8. **Steam Deck & SteamOS Integration**:
+   - **Auto-Detection**: Automatically detects Steam Deck hardware (`Jupiter` LCD / `Galileo` OLED) and Steam Gaming Mode (`Gamescope`), fitting the `1280x800` (16:10) display and opening fullscreen in Gaming Mode.
+   - **Native Controller / Steam Input Support** (`/dev/input/js*`):
+     - **D-Pad / Left Stick**: Navigate camera tiles in 2D Grid View (or select recordings & scrub `-30s` / `+30s` in Playback)
+     - **`L1` / `R1` Bumpers**: Cycle previous / next camera (or change playback speed `0.25x`..`4x` in Playback)
+     - **`A` Button**: Zoom into selected camera / return to Grid View (or Play selected recording)
+     - **`B` Button**: Return to Grid View / Stop or close playback
+     - **`X` Button**: Save instant snapshot
+     - **`Y` Button**: Open DVR Recordings Playback
+     - **`Start` (Menu)**: Pause / Resume stream
+     - **`Select` (View)**: Toggle Activity & Motion Events drawer
+   - **One-Click Non-Steam Shortcut Registration**: Click **Add to Steam Library** in **Settings** (or run `python3 cam_viewer.py --add-to-steam`) to register the app directly in Steam's binary `shortcuts.vdf` so it appears in Steam Deck Gaming Mode.
+   - **Steam On-Screen Keyboard**: Clicking any text field in Settings on a Steam Deck automatically summons the Steam On-Screen Keyboard (`steam://open/keyboard`), or click **Show Steam Keyboard**.
 
 The application restores the last-used video engine, FPS, quality, selected cameras,
 view mode, Events panel visibility, window size, and panel layout when reopened.

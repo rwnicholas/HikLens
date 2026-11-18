@@ -67,6 +67,15 @@ from hikvision_sdk import (
     list_hikvision_recordings,
     recording_file_type_label,
 )
+from steam_deck import (
+    STEAM_DECK_HEIGHT,
+    STEAM_DECK_WIDTH,
+    LinuxGamepadReader,
+    is_steam_deck_hardware,
+    is_steam_gaming_mode,
+    register_steam_shortcut,
+    trigger_steam_osk,
+)
 
 
 _ICON_SVGS = {
@@ -85,6 +94,7 @@ _ICON_SVGS = {
     "events": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#cbd5e1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg>',
     "settings": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#cbd5e1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-1.7 2.9-.2-.1a1.7 1.7 0 0 0-1.8.2l-.2.1h-3.4l-.1-.2a1.7 1.7 0 0 0-1.6-1l-.2.1-3-1.7.1-.2a1.7 1.7 0 0 0-.2-1.8l-.1-.2v-3.4l.2-.1a1.7 1.7 0 0 0 1-1.6l-.1-.2 1.7-3 .2.1a1.7 1.7 0 0 0 1.8-.2l.2-.1h3.4l.1.2a1.7 1.7 0 0 0 1.6 1l.2-.1 3 1.7-.1.2a1.7 1.7 0 0 0 .2 1.8l.1.2v3.4z"/></svg>',
     "fullscreen": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#cbd5e1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H3v5M16 3h5v5M21 16v5h-5M3 16v5h5"/></svg>',
+    "gamepad": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="4"/><path d="M6 12h4M8 10v4"/><circle cx="15" cy="11" r="1" fill="#38bdf8"/><circle cx="17" cy="13" r="1" fill="#38bdf8"/></svg>',
 }
 
 
@@ -1039,6 +1049,7 @@ class CameraViewWidget(QFrame):
         self.is_online = False
         self.fps = 0.0
         self.is_motion_active = False
+        self.is_gamepad_selected = False
 
         self.setFrameStyle(QFrame.StyledPanel | QFrame.Plain)
         self.setLineWidth(2)
@@ -1168,28 +1179,36 @@ class CameraViewWidget(QFrame):
         self.fps = fps
         self.lbl_fps.setText(f"{fps:.1f} FPS")
 
+    def _refresh_border_style(self):
+        if self.is_motion_active:
+            border = "3px solid #ef4444"
+        elif self.is_gamepad_selected:
+            border = "3px solid #38bdf8"
+        else:
+            border = "2px solid #232936"
+        self.setStyleSheet(f"""
+            CameraViewWidget {{
+                background-color: #12151c;
+                border: {border};
+                border-radius: 8px;
+            }}
+        """)
+
+    def set_gamepad_selected(self, selected: bool):
+        if self.is_gamepad_selected != bool(selected):
+            self.is_gamepad_selected = bool(selected)
+            self._refresh_border_style()
+
     def trigger_motion(self):
         self.is_motion_active = True
         self.lbl_motion.setVisible(True)
-        self.setStyleSheet("""
-            CameraViewWidget {
-                background-color: #12151c;
-                border: 3px solid #ef4444;
-                border-radius: 8px;
-            }
-        """)
+        self._refresh_border_style()
         self.motion_clear_timer.start(4000)
 
     def _clear_motion(self):
         self.is_motion_active = False
         self.lbl_motion.setVisible(False)
-        self.setStyleSheet("""
-            CameraViewWidget {
-                background-color: #12151c;
-                border: 2px solid #232936;
-                border-radius: 8px;
-            }
-        """)
+        self._refresh_border_style()
 
 
 # ==============================================================================
@@ -1285,6 +1304,23 @@ class SettingsDialog(QDialog):
         artifact_directory_layout.addWidget(self.edit_artifact_directory)
         artifact_directory_layout.addWidget(btn_browse_artifact_directory)
 
+        steam_actions_row = QWidget()
+        steam_actions_layout = QHBoxLayout(steam_actions_row)
+        steam_actions_layout.setContentsMargins(0, 0, 0, 0)
+        self.btn_add_to_steam = QPushButton("Add to Steam Library")
+        self.btn_add_to_steam.setIcon(_make_icon("gamepad"))
+        self.btn_add_to_steam.setToolTip(
+            "Register Hikvision Camera Viewer as a Non-Steam shortcut for Steam Deck Gaming Mode"
+        )
+        self.btn_add_to_steam.clicked.connect(self._add_to_steam_library)
+        self.btn_open_steam_osk = QPushButton("Show Steam Keyboard")
+        self.btn_open_steam_osk.setToolTip(
+            "Summon the Steam On-Screen Keyboard (steam://open/keyboard)"
+        )
+        self.btn_open_steam_osk.clicked.connect(lambda: trigger_steam_osk())
+        steam_actions_layout.addWidget(self.btn_add_to_steam)
+        steam_actions_layout.addWidget(self.btn_open_steam_osk)
+
         form.addRow("DVR IP Address:", self.edit_ip)
         form.addRow("HTTP ISAPI Port:", self.edit_http_port)
         form.addRow("RTSP Port:", self.edit_rtsp_port)
@@ -1299,6 +1335,21 @@ class SettingsDialog(QDialog):
         form.addRow("Hikvision SDK Directory:", sdk_directory_row)
         form.addRow("SDK Setup:", sdk_actions_row)
         form.addRow("Save snapshots and recordings to:", artifact_directory_row)
+        form.addRow("Steam Deck Integration:", steam_actions_row)
+
+        for line_edit in (
+            self.edit_ip,
+            self.edit_http_port,
+            self.edit_rtsp_port,
+            self.edit_sdk_port,
+            self.edit_user,
+            self.edit_pass,
+            self.edit_stream_verification_code,
+            self.edit_channels,
+            self.edit_sdk_directory,
+            self.edit_artifact_directory,
+        ):
+            line_edit.installEventFilter(self)
 
         layout.addLayout(form)
 
@@ -1321,6 +1372,34 @@ class SettingsDialog(QDialog):
         btn_box.accepted.connect(self._validate_and_accept)
         btn_box.rejected.connect(self.reject)
         layout.addWidget(btn_box)
+
+    def eventFilter(self, watched, event):
+        if (
+            event.type() == QtCore.QEvent.MouseButtonPress
+            and isinstance(watched, QLineEdit)
+            and (is_steam_deck_hardware() or is_steam_gaming_mode())
+        ):
+            trigger_steam_osk()
+        return super().eventFilter(watched, event)
+
+    def _add_to_steam_library(self):
+        try:
+            updated_paths = register_steam_shortcut()
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Steam Shortcut Error",
+                f"Could not register Non-Steam shortcut:\n{exc}",
+            )
+            return
+        formatted = "\n".join(str(p) for p in updated_paths)
+        QMessageBox.information(
+            self,
+            "Added to Steam Library",
+            "Hikvision Camera Viewer was added to your Steam Non-Steam shortcuts:\n\n"
+            f"{formatted}\n\n"
+            "Restart Steam or switch to Gaming Mode on your Steam Deck to launch it.",
+        )
 
     def _browse_artifact_directory(self):
         directory = QFileDialog.getExistingDirectory(
@@ -2474,6 +2553,93 @@ class RecordingsDialog(QDialog):
         self.btn_pause.setEnabled(False)
         self.btn_stop.setEnabled(False)
 
+    def handle_gamepad_action(self, action: str) -> bool:
+        """Handle a semantic Steam Deck / Linux gamepad action inside RecordingsDialog."""
+        if action == "dpad_left" or action == "seek_back":
+            self.skip_seconds(-30)
+            return True
+        if action == "dpad_right" or action == "seek_forward":
+            self.skip_seconds(30)
+            return True
+        if action == "dpad_up":
+            if self.recording_list.count() > 0:
+                row = max(0, self.recording_list.currentRow() - 1)
+                self.recording_list.setCurrentRow(row)
+            return True
+        if action == "dpad_down":
+            if self.recording_list.count() > 0:
+                row = min(
+                    self.recording_list.count() - 1,
+                    self.recording_list.currentRow() + 1,
+                )
+                self.recording_list.setCurrentRow(row)
+            return True
+        if action == "activate":
+            if self.recording_list.count() > 0:
+                self._play_selected_recording()
+            else:
+                self._search_recordings()
+            return True
+        if action == "back":
+            if self.player is not None:
+                self.stop_playback()
+            else:
+                self.close()
+            return True
+        if action == "pause":
+            if self.btn_pause.isEnabled():
+                self.btn_pause.click()
+            elif self.recording_list.count() > 0:
+                self._play_selected_recording()
+            return True
+        if action == "snapshot":
+            channel = (
+                self._capture_channel
+                if self._capture_channel is not None
+                else int(self.combo_channel.currentData())
+            )
+            self._save_playback_snapshot(channel)
+            return True
+        if action == "prev_camera":
+            idx = max(0, self.combo_speed.currentIndex() - 1)
+            self.combo_speed.setCurrentIndex(idx)
+            return True
+        if action == "next_camera":
+            idx = min(
+                self.combo_speed.count() - 1,
+                self.combo_speed.currentIndex() + 1,
+            )
+            self.combo_speed.setCurrentIndex(idx)
+            return True
+        return False
+
+    def keyPressEvent(self, event):
+        key = event.key()
+        if key == Qt.Key_Left:
+            self.skip_seconds(-30)
+            return
+        if key == Qt.Key_Right:
+            self.skip_seconds(30)
+            return
+        if key == Qt.Key_Space and self.btn_pause.isEnabled():
+            self.btn_pause.click()
+            return
+        if key == Qt.Key_S:
+            channel = (
+                self._capture_channel
+                if self._capture_channel is not None
+                else int(self.combo_channel.currentData())
+            )
+            self._save_playback_snapshot(channel)
+            return
+        if key == Qt.Key_BracketLeft:
+            self.handle_gamepad_action("prev_camera")
+            return
+        if key == Qt.Key_BracketRight:
+            self.handle_gamepad_action("next_camera")
+            return
+        super().keyPressEvent(event)
+
     def closeEvent(self, event):
         self.stop_playback()
         super().closeEvent(event)
@@ -2487,10 +2653,19 @@ class RecordingsDialog(QDialog):
 # Main Application Window
 # ==============================================================================
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(
+        self,
+        steam_deck_mode: bool | None = None,
+        enable_gamepad: bool = True,
+    ):
         super().__init__()
         self.setWindowTitle("Hikvision CCTV Stream Viewer")
-        self.resize(1280, 800)
+        self.steam_deck_mode = (
+            bool(steam_deck_mode)
+            if steam_deck_mode is not None
+            else (is_steam_deck_hardware() or is_steam_gaming_mode())
+        )
+        self.resize(STEAM_DECK_WIDTH, STEAM_DECK_HEIGHT)
         self.setMinimumSize(800, 500)
 
         self.settings = QtCore.QSettings(
@@ -2531,79 +2706,90 @@ class MainWindow(QMainWindow):
         self.selected_channels = list(self.viewer_state.visible_channels)
         self.is_paused = False
         self.auto_save_motion = False
+        self.gamepad_selected_channel: int | None = (
+            self.selected_channels[0] if self.selected_channels else None
+        )
+        self.active_recordings_dialog: RecordingsDialog | None = None
+        self.gamepad_reader: LinuxGamepadReader | None = None
 
         self._setup_style()
         self._build_ui()
         self._restore_viewer_state()
+        self._update_gamepad_tile_highlight()
         self._start_threads()
+        if enable_gamepad:
+            self._start_gamepad_reader()
 
     def _setup_style(self):
-        self.setStyleSheet("""
-            QMainWindow {
+        btn_padding = "7px 14px" if self.steam_deck_mode else "5px 12px"
+        combo_padding = "6px 10px" if self.steam_deck_mode else "4px 10px"
+        toolbar_padding = "8px" if self.steam_deck_mode else "6px"
+        self.setStyleSheet(f"""
+            QMainWindow {{
                 background-color: #0b0e14;
-            }
-            QToolBar {
+            }}
+            QToolBar {{
                 background-color: #161b26;
                 border-bottom: 1px solid #232936;
-                padding: 6px;
+                padding: {toolbar_padding};
                 spacing: 8px;
-            }
-            QLabel {
+            }}
+            QLabel {{
                 color: #e2e8f0;
-            }
-            QComboBox {
+            }}
+            QComboBox {{
                 background-color: #1f2937;
                 color: #f8fafc;
                 border: 1px solid #374151;
                 border-radius: 5px;
-                padding: 4px 10px;
+                padding: {combo_padding};
                 min-width: 150px;
                 font-weight: bold;
-            }
-            QComboBox::drop-down {
+            }}
+            QComboBox::drop-down {{
                 border: none;
-            }
-            QComboBox QAbstractItemView {
+            }}
+            QComboBox QAbstractItemView {{
                 background-color: #1f2937;
                 color: #f8fafc;
                 border: 1px solid #374151;
                 outline: 0;
                 selection-background-color: #2563eb;
-            }
-            QComboBox QAbstractItemView::item {
+            }}
+            QComboBox QAbstractItemView::item {{
                 padding: 5px 8px;
-            }
-            QComboBox QAbstractItemView::item:hover {
+            }}
+            QComboBox QAbstractItemView::item:hover {{
                 background-color: #374151;
-            }
-            QPushButton {
+            }}
+            QPushButton {{
                 background-color: #1f2937;
                 color: #e2e8f0;
                 border: 1px solid #374151;
                 border-radius: 5px;
-                padding: 5px 12px;
+                padding: {btn_padding};
                 font-size: 12px;
-            }
-            QPushButton:hover {
+            }}
+            QPushButton:hover {{
                 background-color: #374151;
                 border-color: #4b5563;
-            }
-            QPushButton:checked {
+            }}
+            QPushButton:checked {{
                 background-color: #2563eb;
                 border-color: #3b82f6;
                 color: white;
-            }
-            QStatusBar {
+            }}
+            QStatusBar {{
                 background-color: #161b26;
                 color: #94a3b8;
                 border-top: 1px solid #232936;
-            }
-            QListWidget {
+            }}
+            QListWidget {{
                 background-color: #12151c;
                 color: #cbd5e1;
                 border: 1px solid #232936;
                 border-radius: 6px;
-            }
+            }}
         """)
 
     def _build_ui(self):
@@ -2822,8 +3008,16 @@ class MainWindow(QMainWindow):
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.lbl_status_dvr = QLabel(f"DVR: {self.config.ip} | User: {self.config.username}")
+        self.lbl_status_deck = QLabel(
+            "Steam Deck Mode: Active (A: Zoom • B: Back • X: Snap • Y: Recordings • L1/R1: Cam)"
+            if self.steam_deck_mode
+            else ""
+        )
+        self.lbl_status_deck.setStyleSheet("color: #38bdf8; font-weight: bold;")
+        self.lbl_status_deck.setVisible(self.steam_deck_mode)
         self.lbl_status_alert = QLabel("AlertStream: Initializing...")
         self.status_bar.addWidget(self.lbl_status_dvr)
+        self.status_bar.addWidget(self.lbl_status_deck)
         self.status_bar.addPermanentWidget(self.lbl_status_alert)
 
     def _update_camera_grid(self):
@@ -2850,6 +3044,16 @@ class MainWindow(QMainWindow):
         for channel, tile in self.tiles.items():
             if channel not in selected_channels:
                 tile.hide()
+        if selected_channels and self.gamepad_selected_channel not in selected_channels:
+            self.gamepad_selected_channel = selected_channels[0]
+        self._update_gamepad_tile_highlight()
+
+    def _update_gamepad_tile_highlight(self):
+        show_highlight = self.active_mode == "ALL" and len(self.selected_channels) > 1
+        for channel, tile in self.tiles.items():
+            tile.set_gamepad_selected(
+                show_highlight and channel == self.gamepad_selected_channel
+            )
 
     def _rebuild_camera_views(self, previous_channels: list):
         mode = self.active_mode
@@ -3119,6 +3323,7 @@ class MainWindow(QMainWindow):
                 self.combo_cam.setCurrentIndex(idx)
         else:
             ch = int(mode)
+            self.gamepad_selected_channel = ch
             self.single_tile.channel = ch
             self.single_tile.lbl_title.setText(f"Camera {ch} (Enlarged)")
             self.stacked_view.setCurrentIndex(1)
@@ -3126,7 +3331,140 @@ class MainWindow(QMainWindow):
             idx = self.combo_cam.findData(mode)
             if idx >= 0 and self.combo_cam.currentIndex() != idx:
                 self.combo_cam.setCurrentIndex(idx)
+        self._update_gamepad_tile_highlight()
         self._sync_worker_activity()
+
+    def _start_gamepad_reader(self):
+        self.gamepad_reader = LinuxGamepadReader(parent=self)
+        self.gamepad_reader.action_triggered.connect(self.handle_gamepad_action)
+        self.gamepad_reader.controller_connected.connect(
+            self._on_gamepad_connected
+        )
+        self.gamepad_reader.start()
+
+    @Slot(str)
+    def _on_gamepad_connected(self, device_name: str):
+        self.lbl_status_deck.setText(
+            f"Controller ({device_name}): A Zoom • B Back • X Snap • Y Recordings • L1/R1 Cam"
+        )
+        self.lbl_status_deck.setVisible(True)
+
+    def _cycle_camera_selection(self, step: int):
+        visible = [
+            ch for ch in self.config.channels if ch in self.selected_channels
+        ]
+        if not visible:
+            return
+        if self.active_mode == "ALL":
+            current = (
+                self.gamepad_selected_channel
+                if self.gamepad_selected_channel in visible
+                else visible[0]
+            )
+            idx = (visible.index(current) + step) % len(visible)
+            self.gamepad_selected_channel = visible[idx]
+            self._update_gamepad_tile_highlight()
+            self.status_bar.showMessage(
+                f"Selected Camera {self.gamepad_selected_channel} (Press A to zoom)",
+                2000,
+            )
+        else:
+            current = int(self.active_mode)
+            order = visible if current in visible else list(self.config.channels)
+            idx = (order.index(current) + step) % len(order)
+            self.switch_mode(str(order[idx]))
+
+    def _move_grid_selection_2d(self, d_row: int, d_col: int):
+        visible = [
+            ch for ch in self.config.channels if ch in self.selected_channels
+        ]
+        if not visible:
+            return
+        if self.active_mode != "ALL":
+            self._cycle_camera_selection(d_col if d_col != 0 else d_row)
+            return
+        _rows, columns = camera_grid_dimensions(len(visible))
+        current = (
+            self.gamepad_selected_channel
+            if self.gamepad_selected_channel in visible
+            else visible[0]
+        )
+        index = visible.index(current)
+        row, col = divmod(index, columns)
+        new_index = min(
+            len(visible) - 1,
+            max(0, (row + d_row) * columns + (col + d_col)),
+        )
+        self.gamepad_selected_channel = visible[new_index]
+        self._update_gamepad_tile_highlight()
+
+    @Slot(str)
+    def handle_gamepad_action(self, action: str) -> bool:
+        """Process a physical Steam Deck / Linux gamepad action."""
+        if (
+            self.active_recordings_dialog is not None
+            and self.active_recordings_dialog.isVisible()
+        ):
+            return self.active_recordings_dialog.handle_gamepad_action(action)
+
+        if action == "dpad_left":
+            self._move_grid_selection_2d(0, -1)
+            return True
+        if action == "dpad_right":
+            self._move_grid_selection_2d(0, 1)
+            return True
+        if action == "dpad_up":
+            self._move_grid_selection_2d(-1, 0)
+            return True
+        if action == "dpad_down":
+            self._move_grid_selection_2d(1, 0)
+            return True
+        if action == "prev_camera":
+            self._cycle_camera_selection(-1)
+            return True
+        if action == "next_camera":
+            self._cycle_camera_selection(1)
+            return True
+        if action == "activate":
+            if self.active_mode == "ALL":
+                target = (
+                    self.gamepad_selected_channel
+                    if self.gamepad_selected_channel in self.selected_channels
+                    else (
+                        self.selected_channels[0]
+                        if self.selected_channels
+                        else self.config.channels[0]
+                    )
+                )
+                self.switch_mode(str(target))
+            else:
+                self.switch_mode("ALL")
+            return True
+        if action == "back":
+            if self.active_mode != "ALL":
+                self.switch_mode("ALL")
+            elif self.isFullScreen() and not is_steam_gaming_mode():
+                self._toggle_fullscreen()
+            return True
+        if action == "snapshot":
+            self._take_snapshot()
+            return True
+        if action == "recordings":
+            self._open_recordings_dialog()
+            return True
+        if action == "pause":
+            self.btn_pause.click()
+            return True
+        if action == "toggle_events":
+            self.btn_toggle_log.click()
+            return True
+        if action == "fullscreen":
+            self._toggle_fullscreen()
+            return True
+        if action == "record":
+            self._toggle_recording()
+            return True
+        return False
 
     def _toggle_pause(self):
         self.is_paused = self.btn_pause.isChecked()
@@ -3362,7 +3700,11 @@ class MainWindow(QMainWindow):
 
     def _open_recordings_dialog(self):
         default_channel = (
-            self.selected_channels[0]
+            (
+                self.gamepad_selected_channel
+                if self.gamepad_selected_channel in self.selected_channels
+                else self.selected_channels[0]
+            )
             if self.active_mode == "ALL"
             else int(self.active_mode)
         )
@@ -3372,7 +3714,13 @@ class MainWindow(QMainWindow):
             default_channel=default_channel,
             parent=self,
         )
-        dialog.exec()
+        if self.steam_deck_mode:
+            dialog.resize(STEAM_DECK_WIDTH, STEAM_DECK_HEIGHT)
+        self.active_recordings_dialog = dialog
+        try:
+            dialog.exec()
+        finally:
+            self.active_recordings_dialog = None
 
     def _open_settings(self):
         dialog = SettingsDialog(self.config, self.snapshot_dir, self)
@@ -3432,6 +3780,20 @@ class MainWindow(QMainWindow):
             self.btn_pause.click()
         elif key in (Qt.Key_F, Qt.Key_F11):
             self._toggle_fullscreen()
+        elif key == Qt.Key_Left:
+            self.handle_gamepad_action("dpad_left")
+        elif key == Qt.Key_Right:
+            self.handle_gamepad_action("dpad_right")
+        elif key == Qt.Key_Up:
+            self.handle_gamepad_action("dpad_up")
+        elif key == Qt.Key_Down:
+            self.handle_gamepad_action("dpad_down")
+        elif key in (Qt.Key_Return, Qt.Key_Enter):
+            self.handle_gamepad_action("activate")
+        elif key == Qt.Key_PageUp:
+            self.handle_gamepad_action("prev_camera")
+        elif key == Qt.Key_PageDown:
+            self.handle_gamepad_action("next_camera")
         else:
             super().keyPressEvent(event)
 
@@ -3458,6 +3820,8 @@ class MainWindow(QMainWindow):
                 self, "Viewer State Error", f"Could not save viewer state:\n{exc}"
             )
 
+        if self.gamepad_reader is not None:
+            self.gamepad_reader.stop()
         if self.recorder is not None:
             self.recorder.stop()
         for w in self.workers.values():
@@ -3470,19 +3834,58 @@ class MainWindow(QMainWindow):
 # ==============================================================================
 # Entry Point
 # ==============================================================================
-def main():
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Hikvision CCTV Stream Viewer (Desktop & Steam Deck)"
+    )
+    parser.add_argument(
+        "--steam-deck",
+        action="store_true",
+        help="Enable Steam Deck 1280x800 UI & gamepad mode",
+    )
+    parser.add_argument(
+        "--fullscreen",
+        action="store_true",
+        help="Start in fullscreen mode (automatic in Steam Gaming Mode)",
+    )
+    parser.add_argument(
+        "--add-to-steam",
+        action="store_true",
+        help="Register Hikvision Camera Viewer as a Non-Steam shortcut in Steam and exit",
+    )
+    args, qt_args = parser.parse_known_args(
+        sys.argv[1:] if argv is None else argv
+    )
+
+    if args.add_to_steam:
+        try:
+            updated = register_steam_shortcut()
+        except Exception as exc:
+            print(f"Could not add shortcut to Steam: {exc}", file=sys.stderr)
+            return 1
+        for path in updated:
+            print(f"Registered Non-Steam shortcut in: {path}")
+        return 0
+
     # Enable High DPI scaling
     os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
-    app = QApplication(sys.argv)
+    app = QApplication([sys.argv[0], *qt_args])
     app.setApplicationName("Hikvision CCTV Stream Viewer")
     _configure_dark_theme(app)
     font = QFont("Sans-Serif", 10)
     app.setFont(font)
 
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
+    deck_mode = args.steam_deck or is_steam_deck_hardware() or is_steam_gaming_mode()
+    window = MainWindow(steam_deck_mode=deck_mode)
+    if args.fullscreen or is_steam_gaming_mode():
+        window.showFullScreen()
+        window.btn_fullscreen.setText("Exit Fullscreen")
+    else:
+        window.show()
+    return app.exec()
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
