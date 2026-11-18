@@ -452,6 +452,14 @@ class HikvisionCameraPlayer(QThread):
     def _diagnostic_summary(self, error: str) -> str:
         with self._diagnostics_lock:
             diagnostics = dict(self._diagnostics)
+        if (
+            diagnostics.get("login") == "failed"
+            and diagnostics.get("sdk_error_code") == 7
+        ):
+            diagnostics["sdk_error_message"] = (
+                "NET_DVR_NETWORK_FAIL_CONNECT: HCNetSDK could not connect to the "
+                "DVR. Check its configured IP address, SDK port, and network path."
+            )
         diagnostics["decoder_error"] = error
         return "Hikvision capture failed: " + json.dumps(
             diagnostics, sort_keys=True

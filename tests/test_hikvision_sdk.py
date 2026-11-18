@@ -7,7 +7,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 import hikvision_sdk
-from hikvision_sdk import HikvisionSDKError, discover_hikvision_sdk
+from hikvision_sdk import (
+    HikvisionSDKError,
+    build_hikvision_helper,
+    discover_hikvision_sdk,
+)
 
 
 def _write_elf(path: Path, architecture: tuple[int, int]):
@@ -39,6 +43,68 @@ def _sdk_fixture(root: Path, architecture: tuple[int, int]):
 
 
 class HikvisionSDKDiscoveryTests(unittest.TestCase):
+    def test_build_helper_uses_selected_sdk_and_verifies_installation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "vendor sdk"
+            root.mkdir()
+            source = Path(directory) / "source"
+            source.mkdir()
+            installation = object()
+            with patch.object(
+                hikvision_sdk, "_helper_source_directory", return_value=source
+            ), patch.object(
+                hikvision_sdk.subprocess,
+                "run",
+                return_value=type(
+                    "Result",
+                    (),
+                    {"returncode": 0, "stderr": "", "stdout": ""},
+                )(),
+            ) as run, patch.object(
+                hikvision_sdk,
+                "discover_hikvision_sdk",
+                return_value=installation,
+            ) as discover:
+                result = build_hikvision_helper(root)
+
+            self.assertIs(result, installation)
+            self.assertEqual(
+                run.call_args.args[0],
+                [
+                    "make",
+                    "-B",
+                    "-C",
+                    str(source),
+                    "helper",
+                    f"SDK_ROOT={root.resolve()}",
+                ],
+            )
+            discover.assert_called_once_with(root.resolve())
+
+    def test_helper_build_failure_is_reported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.object(
+                hikvision_sdk, "_helper_source_directory", return_value=root
+            ), patch.object(
+                hikvision_sdk.subprocess,
+                "run",
+                return_value=type(
+                    "Result",
+                    (),
+                    {
+                        "returncode": 2,
+                        "stderr": "missing PlayCtrl headers",
+                        "stdout": "",
+                    },
+                )(),
+            ):
+                with self.assertRaisesRegex(
+                    HikvisionSDKError,
+                    "missing PlayCtrl headers",
+                ):
+                    build_hikvision_helper(root)
+
     def test_reports_missing_installation(self):
         with tempfile.TemporaryDirectory() as directory:
             missing = Path(directory) / "missing"

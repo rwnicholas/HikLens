@@ -123,6 +123,7 @@ run_builder \
             --onedir \
             --windowed \
             --name HikvisionCameraViewer \
+            --add-data /src/hikvision-sdk:hikvision-sdk \
             --distpath /out/dist \
             --workpath /out/build \
             /src/cam_viewer.py

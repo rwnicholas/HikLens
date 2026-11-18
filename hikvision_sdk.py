@@ -6,6 +6,7 @@ import os
 import platform
 import struct
 import subprocess
+import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +35,76 @@ _ELF_HOSTS = {
 }
 _HELPER_CHECK_LOCK = threading.Lock()
 _HELPER_CHECK_CACHE: dict[tuple[str, int, int], str | None] = {}
+HIKVISION_SDK_DOWNLOAD_URL = (
+    "https://www.hikvision.com/en/support/tools/hitools/clf4633a00e385d6ea/"
+)
+
+
+def _helper_source_directory() -> Path:
+    candidates = [
+        Path(__file__).resolve().parent / "hikvision-sdk",
+        Path("/app/share/hikvision-linux/hikvision-sdk"),
+    ]
+    bundle_directory = getattr(sys, "_MEIPASS", None)
+    if bundle_directory:
+        candidates.insert(0, Path(bundle_directory) / "hikvision-sdk")
+    for candidate in candidates:
+        if (candidate / "Makefile").is_file() and (
+            candidate / "sdk_stream_test.cpp"
+        ).is_file():
+            return candidate
+    searched = ", ".join(str(path) for path in candidates)
+    raise HikvisionSDKError(
+        "Hikvision helper build sources are missing from this installation. "
+        f"Searched: {searched}"
+    )
+
+
+def build_hikvision_helper(
+    sdk_directory: str | os.PathLike[str],
+) -> HikvisionSDKInstallation:
+    """Build the local helper against a user-provided SDK and verify it."""
+    root = Path(sdk_directory).expanduser().resolve()
+    if not root.is_dir():
+        raise HikvisionSDKError(f"Hikvision SDK directory does not exist: {root}")
+
+    source_directory = _helper_source_directory()
+    command = [
+        "make",
+        "-B",
+        "-C",
+        str(source_directory),
+        "helper",
+        f"SDK_ROOT={root}",
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+    except FileNotFoundError as exc:
+        raise HikvisionSDKError(
+            "Cannot build the Hikvision helper because 'make' is not installed."
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HikvisionSDKError(
+            "Building the Hikvision helper timed out after 180 seconds."
+        ) from exc
+    except OSError as exc:
+        raise HikvisionSDKError(f"Could not run make to build the helper: {exc}") from exc
+
+    if result.returncode:
+        details = (result.stderr or result.stdout).strip()
+        raise HikvisionSDKError(
+            "Hikvision helper build failed. Check that the selected SDK package "
+            "matches this system and includes its development headers/libraries. "
+            f"Build output: {details[-3000:] or 'no details'}"
+        )
+
+    return discover_hikvision_sdk(root)
 
 
 def _read_elf_architecture(path: Path) -> tuple[int, int]:

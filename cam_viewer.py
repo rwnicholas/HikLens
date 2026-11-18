@@ -33,7 +33,17 @@ from PySide6.QtCore import (
     Qt, QBuffer, QIODevice, QThread, Signal, Slot, QTimer, QSize, QPoint,
     QStandardPaths, QUrl,
 )
-from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QFont, QPen, QAction, QIcon
+from PySide6.QtGui import (
+    QImage,
+    QPixmap,
+    QPainter,
+    QColor,
+    QFont,
+    QPen,
+    QAction,
+    QIcon,
+    QDesktopServices,
+)
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QLabel, QPushButton, QComboBox, QInputDialog, QSlider, QStatusBar,
@@ -49,6 +59,11 @@ from capture_backends import (
     supports_selectable_fps,
 )
 from hikvision_backend import HikvisionCameraPlayer
+from hikvision_sdk import (
+    HIKVISION_SDK_DOWNLOAD_URL,
+    HikvisionSDKError,
+    build_hikvision_helper,
+)
 
 
 _ICON_SVGS = {
@@ -1244,6 +1259,17 @@ class SettingsDialog(QDialog):
         sdk_directory_layout.setContentsMargins(0, 0, 0, 0)
         sdk_directory_layout.addWidget(self.edit_sdk_directory)
         sdk_directory_layout.addWidget(btn_browse_sdk_directory)
+        sdk_actions_row = QWidget()
+        sdk_actions_layout = QHBoxLayout(sdk_actions_row)
+        sdk_actions_layout.setContentsMargins(0, 0, 0, 0)
+        self.btn_get_hikvision_sdk = QPushButton("Get SDK")
+        self.btn_get_hikvision_sdk.clicked.connect(self._open_hikvision_sdk_page)
+        self.btn_build_hikvision_helper = QPushButton("Build / Verify Helper")
+        self.btn_build_hikvision_helper.clicked.connect(
+            self._build_hikvision_helper
+        )
+        sdk_actions_layout.addWidget(self.btn_get_hikvision_sdk)
+        sdk_actions_layout.addWidget(self.btn_build_hikvision_helper)
         self.edit_artifact_directory = QLineEdit(str(artifact_directory))
         btn_browse_artifact_directory = QPushButton("Browse...")
         btn_browse_artifact_directory.clicked.connect(
@@ -1267,6 +1293,7 @@ class SettingsDialog(QDialog):
         )
         form.addRow("Monitored Channels:", self.edit_channels)
         form.addRow("Hikvision SDK Directory:", sdk_directory_row)
+        form.addRow("SDK Setup:", sdk_actions_row)
         form.addRow("Save snapshots and recordings to:", artifact_directory_row)
 
         layout.addLayout(form)
@@ -1277,7 +1304,10 @@ class SettingsDialog(QDialog):
             "code is separate from the DVR password and is sent only to the "
             "optional Hikvision PlayCtrl helper. "
             "The optional Hikvision SDK is proprietary, must be obtained separately, "
-            "and is not bundled with this application."
+            "and is not bundled with this application. Get SDK opens Hikvision's "
+            "official download page; choose an extracted SDK directory before "
+            "building the local helper. Building requires make and a C++17 "
+            "compiler to be available to the application."
         )
         storage_note.setWordWrap(True)
         layout.addWidget(storage_note)
@@ -1304,6 +1334,49 @@ class SettingsDialog(QDialog):
         )
         if directory:
             self.edit_sdk_directory.setText(directory)
+
+    def _open_hikvision_sdk_page(self):
+        if not QDesktopServices.openUrl(QUrl(HIKVISION_SDK_DOWNLOAD_URL)):
+            QMessageBox.warning(
+                self,
+                "Could Not Open SDK Page",
+                "Open Hikvision's official SDK page in a browser:\n"
+                f"{HIKVISION_SDK_DOWNLOAD_URL}",
+            )
+
+    def _build_hikvision_helper(self):
+        sdk_directory = self.edit_sdk_directory.text().strip()
+        if not sdk_directory:
+            QMessageBox.warning(
+                self,
+                "SDK Directory Required",
+                "Download and extract the Linux SDK, then choose its root "
+                "directory first.",
+            )
+            return
+
+        self.btn_build_hikvision_helper.setEnabled(False)
+        self.btn_build_hikvision_helper.setText("Building...")
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        QApplication.processEvents()
+        try:
+            installation = build_hikvision_helper(sdk_directory)
+        except HikvisionSDKError as exc:
+            QMessageBox.critical(self, "Hikvision SDK Setup Failed", str(exc))
+        else:
+            self.edit_sdk_directory.setText(str(installation.root))
+            QMessageBox.information(
+                self,
+                "Hikvision SDK Ready",
+                "The local helper was built and its SDK dependencies passed "
+                "the initialization check.\n\n"
+                "This check does not verify video decryption. Save the settings "
+                "and select the Hikvision SDK engine to test live decoded frames.",
+            )
+        finally:
+            QApplication.restoreOverrideCursor()
+            self.btn_build_hikvision_helper.setEnabled(True)
+            self.btn_build_hikvision_helper.setText("Build / Verify Helper")
 
     def get_artifact_directory(self) -> Path:
         directory = self.edit_artifact_directory.text().strip()

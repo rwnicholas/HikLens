@@ -149,12 +149,13 @@ The HTTP and RTSP/FFmpeg backends remain available and do not require vendor
 libraries. RTSP/FFmpeg remains the default. To use the optional Hikvision
 backend:
 
-1. Open Hikvision's official [HiTools SDK download page](https://www.hikvision.com/en/support/tools/hitools/clf4633a00e385d6ea/)
-   and download the **Device Network SDK for Linux 64-bit** package matching
-   your computer's CPU architecture. For x86-64, **V6.1.11.40,
-   build 20260922** is the version validated with this application. Hikvision
-   may require an account or acceptance of its license terms to access the
-   download.
+1. In the viewer, open **Settings** and click **Get SDK**. This opens
+   Hikvision's official [HiTools SDK download page](https://www.hikvision.com/en/support/tools/hitools/clf4633a00e385d6ea/)
+   in your browser. Download the **Device Network SDK for Linux 64-bit**
+   package matching your computer's CPU architecture. For x86-64,
+   **V6.1.11.40, build 20260922** is the version validated with this
+   application. Hikvision may require an account or acceptance of its license
+   terms to access the download.
 2. Extract the archive outside the application source directory. For example:
 
    ```text
@@ -163,31 +164,29 @@ backend:
 
    Use the extracted SDK root containing `lib/`, `incEn/`, and `QtDemo/`—not
    the `lib/` subdirectory—as the SDK directory.
-3. Install `make` and a C++17 compiler (`g++`), then build the application
-   helper against the SDK you downloaded:
-
-   ```bash
-   make -C hikvision-sdk helper \
-     SDK_ROOT="$HOME/Downloads/EN-HCNetSDKV6.1.11.40_build20260922_linux64"
-   ```
-
-The helper is installed to
-`~/.local/lib/hikvision-camera-viewer/hikvision_stream_helper`; it is not
-committed or bundled. Start the viewer, open **Settings**, and set:
-
-- **Hikvision SDK Directory** to the extracted SDK root (or set
-  `HIKVISION_SDK_DIR` before starting the application).
-- **Hikvision SDK Port** to the DVR's SDK port, usually `8000`.
-- **Username** and **Password** to a DVR account with live-view permission.
-- **Streaming Verification Code** to the separate Platform Access stream
-  encryption code; it is not the DVR account password.
+3. Back in **Settings**, use **Browse...** to select the SDK root and click
+   **Build / Verify Helper**. This builds the open integration helper locally
+   against your SDK, installs it under
+   `~/.local/lib/hikvision-camera-viewer/`, and checks that the libraries load.
+   The build requires `make` and a C++17 compiler (`g++`) available to the app.
+   No vendor binaries are downloaded or bundled by the application.
+4. Set these values in **Settings**:
+   - **Hikvision SDK Directory** to the extracted SDK root (or set
+     `HIKVISION_SDK_DIR` before starting the application).
+   - **Hikvision SDK Port** to the DVR's SDK port, usually `8000`.
+   - **Username** and **Password** to a DVR account with live-view permission.
+   - **Streaming Verification Code** to the separate Platform Access stream
+     encryption code; it is not the DVR account password.
 
 Select **Hikvision SDK (encrypted stream)** in the toolbar's **Engine**
 selector. Choose the SDK directory itself, not its `lib/` folder. Before
 capture, the application checks the SDK architecture and required libraries
-and runs a local HCNetSDK initialization / PlayCtrl allocation check. Missing
-or incompatible dependencies are reported explicitly; the application does
-not silently fall back to RTSP.
+and runs a local HCNetSDK initialization / PlayCtrl allocation check during
+**Build / Verify Helper**. Missing compilers, libraries, or incompatible
+architectures are reported explicitly; the application does not silently fall
+back to RTSP. Flatpak runtimes may not include a C++ compiler, so use a native
+installation or an AppImage with host `make` and `g++` available for this setup
+flow.
 
 PlayCtrl runs in a separate helper process with a headless/surfaceless
 environment so its EGL settings cannot change the Qt application's Wayland or

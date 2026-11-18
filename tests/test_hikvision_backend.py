@@ -213,6 +213,15 @@ class HikvisionBackendTests(unittest.TestCase):
         self.assertTrue(worker._configuration_changed.is_set())
         terminate.assert_called_once()
 
+    def test_login_connection_error_has_actionable_diagnostic(self):
+        worker = self.make_worker()
+        worker._diagnostics = {"login": "failed", "sdk_error_code": 7}
+
+        message = worker._diagnostic_summary("helper exited")
+
+        self.assertIn("NET_DVR_NETWORK_FAIL_CONNECT", message)
+        self.assertIn("configured IP address, SDK port, and network path", message)
+
     def test_no_decoded_frames_is_an_error_not_an_online_black_frame(self):
         worker = self.make_worker()
         worker._running = True

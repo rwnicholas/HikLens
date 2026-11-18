@@ -29,6 +29,8 @@ make -C hikvision-sdk helper \
 This installs the helper to
 `~/.local/lib/hikvision-camera-viewer/hikvision_stream_helper`. The executable
 links to the selected external SDK and is not placed in the repository.
+The same build and SDK initialization check are available in the application's
+Settings through **Build / Verify Helper** after choosing the SDK directory.
 
 ## Configure the application
 
