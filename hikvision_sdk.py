@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import platform
 import shutil
@@ -23,6 +24,39 @@ class HikvisionSDKInstallation:
     library_directory: Path
     component_directory: Path
     stream_helper: Path
+
+
+@dataclass(frozen=True)
+class HikvisionRecording:
+    name: str
+    channel: int
+    start_time: str
+    end_time: str
+    size_bytes: int = 0
+    file_type: int = 0
+    locked: bool = False
+    stream_type: int = 0
+
+
+_RECORDING_PREFIX = "HIKVISION_RECORDING "
+_RECORDING_FILE_TYPES = {
+    0: "Scheduled",
+    1: "Motion",
+    2: "Alarm",
+    3: "Motion | Alarm",
+    4: "Motion & Alarm",
+    5: "Command",
+    6: "Manual",
+    7: "VCA",
+    9: "VCA",
+    10: "PIR",
+    11: "Wireless",
+    12: "Emergency",
+}
+
+
+def recording_file_type_label(file_type: int) -> str:
+    return _RECORDING_FILE_TYPES.get(int(file_type), f"Type {file_type}")
 
 
 _ELF_HOSTS = {
@@ -58,6 +92,33 @@ def _helper_source_directory() -> Path:
     raise HikvisionSDKError(
         "Hikvision helper build sources are missing from this installation. "
         f"Searched: {searched}"
+    )
+
+
+def _clean_helper_output(text: str) -> str:
+    lines = [
+        line
+        for line in text.splitlines()
+        if line.strip() and line.strip() != "Cannot load libcuda.so.1"
+    ]
+    return "\n".join(lines).strip()
+
+
+def _helper_supports_recordings(helper: str | os.PathLike[str]) -> bool:
+    path = Path(helper)
+    if not path.is_file():
+        return True
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return False
+    # 20-byte synthetic ELF fixtures used in unit tests do not embed strings.
+    if len(data) <= 64:
+        return True
+    return (
+        b"--list-recordings" in data
+        and b"--playback" in data
+        and b"HIKVISION_PLAYBACK_POS" in data
     )
 
 
@@ -97,11 +158,14 @@ def _compile_helper_directly(
         "-o",
         str(helper_path),
     ]
+    env = os.environ.copy()
+    env["CCACHE_DISABLE"] = "1"
     return subprocess.run(
         command,
         check=False,
         capture_output=True,
         text=True,
+        env=env,
         timeout=180,
     )
 
@@ -262,7 +326,7 @@ def _verify_helper(
             raise HikvisionSDKError(message) from exc
 
         if result.returncode:
-            detail = (result.stderr or result.stdout).strip()
+            detail = _clean_helper_output(result.stderr or result.stdout)
             message = (
                 f"Hikvision helper could not load its SDK dependencies "
                 f"(exit {result.returncode}): {detail[-800:] or 'no details'}"
@@ -355,13 +419,18 @@ def discover_hikvision_sdk(
     for path in checked_files:
         _check_elf_architecture(path, host)
 
+    executable_helpers = [
+        candidate.resolve()
+        for candidate in _candidate_helpers(root)
+        if candidate.is_file() and os.access(candidate, os.X_OK)
+    ]
     helper = next(
         (
-            candidate.resolve()
-            for candidate in _candidate_helpers(root)
-            if candidate.is_file() and os.access(candidate, os.X_OK)
+            candidate
+            for candidate in executable_helpers
+            if _helper_supports_recordings(candidate)
         ),
-        None,
+        executable_helpers[0] if executable_helpers else None,
     )
     if helper is None:
         searched_helpers = ", ".join(
@@ -381,3 +450,96 @@ def discover_hikvision_sdk(
         component_directory=component_directory,
         stream_helper=helper,
     )
+
+
+def _ensure_recordings_capable_helper(
+    installation: HikvisionSDKInstallation,
+) -> HikvisionSDKInstallation:
+    if _helper_supports_recordings(installation.stream_helper):
+        return installation
+    rebuilt = build_hikvision_helper(installation.root)
+    if not _helper_supports_recordings(rebuilt.stream_helper):
+        raise HikvisionSDKError(
+            "The installed Hikvision stream helper is outdated and does not "
+            "support DVR recordings playback. Click 'Build / Verify Helper' "
+            "in Settings or rebuild the Flatpak/AppImage package."
+        )
+    return rebuilt
+
+
+def list_hikvision_recordings(
+    config,
+    channel: int,
+    start_time: str,
+    end_time: str,
+) -> list[HikvisionRecording]:
+    """Query recorded DVR segments for a channel and time range via HCNetSDK."""
+    installation = _ensure_recordings_capable_helper(
+        discover_hikvision_sdk(getattr(config, "sdk_directory", ""))
+    )
+    env = helper_runtime_environment(
+        installation.library_directory,
+        installation.component_directory,
+    )
+    env.update(
+        {
+            "HIKVISION_HOST": str(config.ip),
+            "HIKVISION_PORT": str(getattr(config, "sdk_port", 8000)),
+            "HIKVISION_USERNAME": str(config.username),
+            "HIKVISION_PASSWORD": str(config.password),
+            "HIKVISION_CHANNEL": str(int(channel)),
+            "HIKVISION_START_TIME": str(start_time).strip(),
+            "HIKVISION_END_TIME": str(end_time).strip(),
+        }
+    )
+    try:
+        result = subprocess.run(
+            [str(installation.stream_helper), "--list-recordings"],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=45,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise HikvisionSDKError(
+            "Searching DVR recordings timed out after 45 seconds."
+        ) from exc
+    except OSError as exc:
+        raise HikvisionSDKError(
+            f"Could not run Hikvision helper to search recordings: {exc}"
+        ) from exc
+
+    if result.returncode:
+        detail = _clean_helper_output(result.stderr or result.stdout)
+        raise HikvisionSDKError(
+            f"Could not search DVR recordings (exit {result.returncode}): "
+            f"{detail[-800:] or 'no details'}"
+        )
+
+    recordings: list[HikvisionRecording] = []
+    for raw_line in result.stdout.splitlines():
+        line = raw_line.strip()
+        if not line.startswith(_RECORDING_PREFIX):
+            continue
+        try:
+            payload = json.loads(line[len(_RECORDING_PREFIX) :])
+        except json.JSONDecodeError as exc:
+            raise HikvisionSDKError(
+                "Hikvision helper emitted malformed recording metadata."
+            ) from exc
+        if not isinstance(payload, dict):
+            continue
+        recordings.append(
+            HikvisionRecording(
+                name=str(payload.get("name", "")),
+                channel=int(payload.get("channel", channel)),
+                start_time=str(payload.get("start_time", "")),
+                end_time=str(payload.get("end_time", "")),
+                size_bytes=max(0, int(payload.get("size_bytes", 0))),
+                file_type=int(payload.get("file_type", 0)),
+                locked=bool(payload.get("locked", False)),
+                stream_type=int(payload.get("stream_type", 0)),
+            )
+        )
+    return recordings

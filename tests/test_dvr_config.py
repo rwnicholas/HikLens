@@ -13,11 +13,12 @@ try:
 
     from cam_viewer import (
         DVRConfig,
+        RecordingsDialog,
         SettingsDialog,
         load_dvr_config,
         save_dvr_config,
     )
-    from hikvision_sdk import HikvisionSDKError
+    from hikvision_sdk import HikvisionRecording, HikvisionSDKError
 except ImportError:
     QApplication = None
 
@@ -117,6 +118,88 @@ class DVRConfigSettingsTests(unittest.TestCase):
         show_error.assert_called_once()
         self.assertIn("compiler unavailable", show_error.call_args.args[2])
         self.assertTrue(dialog.btn_build_hikvision_helper.isEnabled())
+
+    def test_recordings_dialog_searches_and_starts_selected_playback(self):
+        config = DVRConfig(ip="192.0.2.10", channels=[1, 2])
+        dialog = RecordingsDialog(
+            config,
+            Path(tempfile.gettempdir()),
+            default_channel=2,
+        )
+        recording = HikvisionRecording(
+            name="ch02_clip_01",
+            channel=2,
+            start_time="2026-11-18 12:00:00",
+            end_time="2026-11-18 12:05:00",
+            size_bytes=2097152,
+            file_type=1,
+        )
+        with patch(
+            "cam_viewer.list_hikvision_recordings",
+            return_value=[recording],
+        ) as search:
+            dialog._search_recordings()
+
+        search.assert_called_once()
+        self.assertEqual(dialog.recording_list.count(), 1)
+
+        with patch.object(dialog, "_start_playback") as start_playback:
+            dialog._play_selected_recording()
+
+        start_playback.assert_called_once_with(
+            channel=2,
+            start_time="2026-11-18 12:00:00",
+            end_time="2026-11-18 12:05:00",
+            recording_name="ch02_clip_01",
+            playback_position_percent=0,
+            preserve_timeline=True,
+        )
+
+    def test_recordings_dialog_timeline_seeks_inside_selected_capture(self):
+        config = DVRConfig(ip="192.0.2.10", channels=[1, 2])
+        dialog = RecordingsDialog(
+            config,
+            Path(tempfile.gettempdir()),
+            default_channel=2,
+        )
+        recording = HikvisionRecording(
+            name="ch02_clip_01",
+            channel=2,
+            start_time="2026-11-18 12:00:00",
+            end_time="2026-11-18 12:10:00",
+            size_bytes=4194304,
+            file_type=0,
+        )
+        with patch(
+            "cam_viewer.list_hikvision_recordings",
+            return_value=[recording],
+        ):
+            dialog._search_recordings()
+
+        self.assertEqual(dialog.timeline_widget.duration_seconds, 600)
+        self.assertTrue(dialog.timeline_slider.isEnabled())
+
+        with patch.object(dialog, "_start_playback") as start_playback:
+            dialog.seek_to_timeline_offset(150)
+
+        self.assertEqual(dialog.timeline_widget.offset_seconds, 150)
+        self.assertEqual(dialog.timeline_slider.value(), 150)
+        self.assertIn(
+            "2026-11-18 12:02:30", dialog.lbl_timeline_current.text()
+        )
+        start_playback.assert_called_once_with(
+            channel=2,
+            start_time="2026-11-18 12:02:30",
+            end_time="2026-11-18 12:10:00",
+            recording_name="ch02_clip_01",
+            playback_position_percent=25,
+            preserve_timeline=True,
+        )
+
+        # OSD timestamp updates from the DVR advance the timeline playhead
+        dialog._on_playback_osd_time(2, "2026-11-18 12:04:00")
+        self.assertEqual(dialog.timeline_widget.offset_seconds, 240)
+        self.assertEqual(dialog.timeline_slider.value(), 240)
 
 
 if __name__ == "__main__":

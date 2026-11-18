@@ -8,9 +8,11 @@ from unittest.mock import patch
 
 import hikvision_sdk
 from hikvision_sdk import (
+    HikvisionRecording,
     HikvisionSDKError,
     build_hikvision_helper,
     discover_hikvision_sdk,
+    list_hikvision_recordings,
 )
 
 
@@ -254,6 +256,146 @@ class HikvisionSDKDiscoveryTests(unittest.TestCase):
                     HikvisionSDKError, "missing required libraries/components"
                 ):
                     discover_hikvision_sdk(root)
+
+    def test_list_recordings_parses_helper_json_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "sdk"
+            installation = hikvision_sdk.HikvisionSDKInstallation(
+                root=root,
+                library_directory=root / "lib",
+                component_directory=root / "lib/HCNetSDKCom",
+                stream_helper=root / "app/hikvision_stream_helper",
+            )
+            config = type(
+                "Config",
+                (),
+                {
+                    "ip": "192.0.2.10",
+                    "sdk_port": 8000,
+                    "username": "admin",
+                    "password": "secret",
+                    "sdk_directory": str(root),
+                },
+            )()
+            stdout = (
+                "HIKVISION_RECORDING "
+                '{"name":"ch01_0001","channel":1,'
+                '"start_time":"2026-11-18 10:00:00",'
+                '"end_time":"2026-11-18 10:15:00",'
+                '"size_bytes":10485760,"file_type":1,'
+                '"locked":false,"stream_type":0}\n'
+            )
+            with patch.object(
+                hikvision_sdk,
+                "discover_hikvision_sdk",
+                return_value=installation,
+            ), patch.object(
+                hikvision_sdk.subprocess,
+                "run",
+                return_value=type(
+                    "Result",
+                    (),
+                    {"returncode": 0, "stdout": stdout, "stderr": ""},
+                )(),
+            ) as run:
+                recordings = list_hikvision_recordings(
+                    config,
+                    channel=1,
+                    start_time="2026-11-18 09:00:00",
+                    end_time="2026-11-18 11:00:00",
+                )
+
+            self.assertEqual(
+                recordings,
+                [
+                    HikvisionRecording(
+                        name="ch01_0001",
+                        channel=1,
+                        start_time="2026-11-18 10:00:00",
+                        end_time="2026-11-18 10:15:00",
+                        size_bytes=10485760,
+                        file_type=1,
+                        locked=False,
+                        stream_type=0,
+                    )
+                ],
+            )
+            self.assertEqual(
+                run.call_args.args[0],
+                [str(installation.stream_helper), "--list-recordings"],
+            )
+            env = run.call_args.kwargs["env"]
+            self.assertEqual(env["HIKVISION_CHANNEL"], "1")
+            self.assertEqual(env["HIKVISION_START_TIME"], "2026-11-18 09:00:00")
+            self.assertEqual(env["HIKVISION_END_TIME"], "2026-11-18 11:00:00")
+
+    def test_list_recordings_rebuilds_outdated_helper_automatically(self):
+        host = hikvision_sdk._ELF_HOSTS[platform.machine().lower()]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "sdk"
+            outdated_helper = _sdk_fixture(root, host)
+            outdated_helper.write_bytes(outdated_helper.read_bytes() + b"\0" * 100)
+            updated_helper = root / "app/hikvision_stream_helper_v2"
+            _write_elf(updated_helper, host)
+            updated_helper.write_bytes(
+                updated_helper.read_bytes()
+                + b"\0" * 100
+                + b"--list-recordings\0--playback\0HIKVISION_PLAYBACK_POS\0"
+            )
+            updated_helper.chmod(0o755)
+            old_install = hikvision_sdk.HikvisionSDKInstallation(
+                root=root,
+                library_directory=root / "lib",
+                component_directory=root / "lib/HCNetSDKCom",
+                stream_helper=outdated_helper,
+            )
+            new_install = hikvision_sdk.HikvisionSDKInstallation(
+                root=root,
+                library_directory=root / "lib",
+                component_directory=root / "lib/HCNetSDKCom",
+                stream_helper=updated_helper,
+            )
+            config = type(
+                "Config",
+                (),
+                {
+                    "ip": "192.0.2.10",
+                    "sdk_port": 8000,
+                    "username": "admin",
+                    "password": "secret",
+                    "sdk_directory": str(root),
+                },
+            )()
+            with patch.object(
+                hikvision_sdk,
+                "discover_hikvision_sdk",
+                return_value=old_install,
+            ), patch.object(
+                hikvision_sdk,
+                "build_hikvision_helper",
+                return_value=new_install,
+            ) as rebuild, patch.object(
+                hikvision_sdk.subprocess,
+                "run",
+                return_value=type(
+                    "Result",
+                    (),
+                    {"returncode": 0, "stdout": "", "stderr": "Cannot load libcuda.so.1\n"},
+                )(),
+            ) as run:
+                recordings = list_hikvision_recordings(
+                    config,
+                    channel=1,
+                    start_time="2026-11-18 09:00:00",
+                    end_time="2026-11-18 11:00:00",
+                )
+
+            self.assertEqual(recordings, [])
+            rebuild.assert_called_once_with(root)
+            self.assertEqual(
+                run.call_args.args[0],
+                [str(updated_helper), "--list-recordings"],
+            )
 
 
 if __name__ == "__main__":

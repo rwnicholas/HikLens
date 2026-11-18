@@ -16,6 +16,7 @@ from PySide6.QtGui import QImage
 
 from hikvision_sdk import (
     HikvisionSDKError,
+    _ensure_recordings_capable_helper,
     discover_hikvision_sdk,
     helper_runtime_environment,
 )
@@ -119,6 +120,15 @@ class HikvisionCameraPlayer(QThread):
             return 1
         return 0 if self._focused else 1
 
+    def _extra_helper_args(self) -> list[str]:
+        return []
+
+    def _extra_helper_env(self) -> dict[str, str]:
+        return {}
+
+    def _online_status_text(self) -> str:
+        return "Online (Hikvision SDK)"
+
     def run(self):
         installation = None
         while self._running:
@@ -217,10 +227,11 @@ class HikvisionCameraPlayer(QThread):
                 "HIKVISION_FRAME_FD": str(write_fd),
             }
         )
+        env.update(self._extra_helper_env())
 
         try:
             process = subprocess.Popen(
-                [str(installation.stream_helper)],
+                [str(installation.stream_helper), *self._extra_helper_args()],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
@@ -370,7 +381,7 @@ class HikvisionCameraPlayer(QThread):
         self._frames_counted += 1
         self._error_logged = False
         self.frame_ready.emit(self.channel, image)
-        self.status_changed.emit(self.channel, "Online (Hikvision SDK)", True)
+        self.status_changed.emit(self.channel, self._online_status_text(), True)
         elapsed = now - self._last_fps_time
         if elapsed >= 1.0:
             self.fps_updated.emit(
@@ -482,3 +493,113 @@ class HikvisionCameraPlayer(QThread):
             process.wait()
         except ProcessLookupError:
             pass
+
+
+class HikvisionPlaybackPlayer(HikvisionCameraPlayer):
+    """Single-session DVR recording playback worker via HCNetSDK/PlayCtrl."""
+
+    playback_finished = Signal(int, bool, str)
+    progress_updated = Signal(int, int)
+    osd_time_updated = Signal(int, str)
+
+    def __init__(
+        self,
+        channel: int,
+        config,
+        start_time: str = "",
+        end_time: str = "",
+        recording_name: str = "",
+        stream_type: int = 0,
+        playback_position_percent: int = 0,
+        parent=None,
+    ):
+        super().__init__(channel, config, parent=parent)
+        self.start_time = str(start_time).strip()
+        self.end_time = str(end_time).strip()
+        self.recording_name = str(recording_name).strip()
+        self._playback_stream_type = int(stream_type)
+        self.playback_position_percent = max(
+            0, min(99, int(playback_position_percent))
+        )
+        self._target_fps = 30
+        self._last_progress = -1
+        self._last_osd_time = ""
+
+    def _stream_type(self) -> int:
+        return self._playback_stream_type
+
+    def _extra_helper_args(self) -> list[str]:
+        return ["--playback"]
+
+    def _extra_helper_env(self) -> dict[str, str]:
+        return {
+            "HIKVISION_PLAYBACK": "1",
+            "HIKVISION_PLAYBACK_FILE": self.recording_name,
+            "HIKVISION_START_TIME": self.start_time,
+            "HIKVISION_END_TIME": self.end_time,
+            "HIKVISION_PLAYBACK_POS": str(self.playback_position_percent),
+        }
+
+    def _online_status_text(self) -> str:
+        if self._last_osd_time:
+            return f"Playing ({self._last_osd_time})"
+        if 0 <= self._last_progress <= 100:
+            return f"Playing ({self._last_progress}%)"
+        return "Playing (Hikvision SDK)"
+
+    def _apply_diagnostics(self, diagnostic: dict):
+        osd_time = str(diagnostic.get("playback_osd_time", "")).strip()
+        if osd_time and osd_time != self._last_osd_time:
+            self._last_osd_time = osd_time
+            self.osd_time_updated.emit(self.channel, osd_time)
+        progress = diagnostic.get("playback_progress")
+        if isinstance(progress, int) and 0 <= progress <= 100:
+            if progress != self._last_progress:
+                self._last_progress = progress
+                self.progress_updated.emit(self.channel, progress)
+        super()._apply_diagnostics(diagnostic)
+
+    def run(self):
+        self.status_changed.emit(self.channel, "Checking Hikvision SDK…", False)
+        try:
+            installation = _ensure_recordings_capable_helper(
+                discover_hikvision_sdk(self.config.sdk_directory)
+            )
+        except HikvisionSDKError as exc:
+            self.status_changed.emit(
+                self.channel, "Hikvision SDK unavailable", False
+            )
+            self.log_event.emit(self.channel, "error", str(exc))
+            self.playback_finished.emit(self.channel, False, str(exc))
+            return
+
+        self.status_changed.emit(
+            self.channel, "Starting recording playback…", False
+        )
+        exit_code, intentional_stop, error = self._run_helper(installation)
+        if intentional_stop:
+            self.status_changed.emit(self.channel, "Playback stopped", False)
+            self.playback_finished.emit(
+                self.channel, True, "Playback stopped."
+            )
+            return
+
+        if error or exit_code:
+            summary = (
+                self._diagnostic_summary(error)
+                if error
+                else f"Hikvision playback helper exited with status {exit_code}."
+            )
+            self.status_changed.emit(self.channel, "Playback error", False)
+            self.log_event.emit(self.channel, "error", summary)
+            self.playback_finished.emit(
+                self.channel,
+                False,
+                error or f"Playback helper exited ({exit_code}).",
+            )
+            return
+
+        self._last_progress = 100
+        self.progress_updated.emit(self.channel, 100)
+        self.status_changed.emit(self.channel, "Playback finished", False)
+        self.playback_finished.emit(self.channel, True, "Playback finished.")

@@ -48,6 +48,15 @@ portable-helper: sdk_stream_test.cpp
 		'void NET_DVR_SetSDKSecretKey() {}' \
 		'void NET_DVR_RealPlay_V40() {}' \
 		'void NET_DVR_StopRealPlay() {}' \
+		'void NET_DVR_FindFile_V40() {}' \
+		'void NET_DVR_FindNextFile_V40() {}' \
+		'void NET_DVR_FindClose_V30() {}' \
+		'void NET_DVR_PlayBackByName() {}' \
+		'void NET_DVR_PlayBackByTime_V40() {}' \
+		'void NET_DVR_SetPlayDataCallBack_V40() {}' \
+		'void NET_DVR_PlayBackControl_V40() {}' \
+		'void NET_DVR_GetPlayBackOsdTime() {}' \
+		'void NET_DVR_StopPlayBack() {}' \
 		'}' | $(CXX) -x c++ -shared -fPIC -Wl,-soname,libhcnetsdk.so - -o "$(STUB_DIR)/libhcnetsdk.so"
 	printf '%s\n' \
 		'extern "C" {' \

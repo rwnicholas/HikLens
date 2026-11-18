@@ -43,21 +43,23 @@ A modern desktop application built in Python (PySide6) to monitor Hikvision DVR 
    - Camera connection failures are also recorded in the Activity & Motion Log.
    - Optional **"Save on Motion"** toggle automatically captures full-resolution snapshots upon motion.
 
-5. **Instant Snapshots**:
+5. **Instant Snapshots & DVR Recordings Playback**:
    - Click the **Snapshot** button (or press `S`) to save uncompressed high-resolution snapshots.
    - Click **Record** (or press `R`) to save one camera as an MP4; in grid view, choose the camera to record. FFmpeg is required.
+   - Click **Recordings** (or press `P`) to search previous DVR recordings by camera and date/time range and watch recorded segments (or play a custom time range) directly in the viewer using the Hikvision SDK (`NET_DVR_FindFile_V40` and `NET_DVR_PlayBackByName` / `NET_DVR_PlayBackByTime_V40`).
    - Choose the destination for snapshots and recordings in **Settings**. The default is `./snapshots/` natively and `Pictures/Hikvision Camera Viewer/` in Flatpak.
 
-5. **HQ RTSP Stream Launcher**:
+6. **HQ RTSP Stream Launcher**:
    - Click **"Open HQ RTSP"** to spawn `ffplay` with low-latency flags (`-fflags nobuffer -flags low_delay -framedrop`) for full-framerate hardware decoding when needed.
 
-6. **Interactive Hotkeys**:
+7. **Interactive Hotkeys**:
    - `0` or `G`: Switch to Grid View
    - `1`, `2`, `3`, `4`: Switch to Camera 1, 2, 3, 4
    - `Double-Click`: Zoom in on clicked camera / Zoom out to grid
    - `Space`: Pause / Resume stream
    - `S`: Take snapshot
    - `R`: Start / stop video recording
+   - `P`: Open DVR Recordings Playback dialog
    - `F` or `F11`: Fullscreen toggle
    - `Esc`: Return from single camera to grid, or exit fullscreen
 

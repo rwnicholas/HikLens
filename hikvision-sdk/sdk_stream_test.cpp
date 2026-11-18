@@ -1,6 +1,5 @@
-#if __has_include(<HCNetSDK.h>) && __has_include(<LinuxPlayM4.h>)
+#if __has_include(<HCNetSDK.h>)
 #include <HCNetSDK.h>
-#include <LinuxPlayM4.h>
 #else
 #include <cstdint>
 
@@ -17,18 +16,28 @@ using LONG = int;
 using WORD = unsigned short;
 using BYTE = unsigned char;
 using BOOL = int;
-using PLAYM4_HWND = unsigned int;
+using HWND = unsigned int;
 
 constexpr int NET_SDK_MAX_VERIFICATION_CODE_LEN = 32;
+constexpr int CARDNUM_LEN_OUT = 32;
+constexpr int GUID_LEN = 16;
+constexpr int STREAM_ID_LEN = 32;
 constexpr DWORD NET_DVR_GET_AES_KEY = 6113;
 constexpr DWORD NET_DVR_SYSHEAD = 1;
 constexpr DWORD NET_DVR_STREAMDATA = 2;
 constexpr DWORD NET_DVR_AUDIOSTREAMDATA = 3;
 
-constexpr unsigned int STREAME_REALTIME = 0;
-constexpr int ENCRYPT_AES_10R_VIDEO = 2;
-constexpr int T_YV12 = 3;
-constexpr int T_RGB32 = 7;
+constexpr LONG NET_DVR_FILE_SUCCESS = 1000;
+constexpr LONG NET_DVR_FILE_NOFIND = 1001;
+constexpr LONG NET_DVR_ISFINDING = 1002;
+constexpr LONG NET_DVR_NOMOREFILE = 1003;
+constexpr LONG NET_DVR_FILE_EXCEPTION = 1004;
+
+constexpr DWORD NET_DVR_PLAYSTART = 1;
+constexpr DWORD NET_DVR_PLAYPAUSE = 3;
+constexpr DWORD NET_DVR_PLAYRESTART = 4;
+constexpr DWORD NET_DVR_PLAYSETPOS = 12;
+constexpr DWORD NET_DVR_PLAYGETPOS = 13;
 
 struct NET_DVR_DEVICEINFO_V40 {
     BYTE byRes[344];
@@ -59,34 +68,104 @@ struct NET_DVR_PREVIEWINFO {
     LONG lChannel;
     DWORD dwStreamType;
     DWORD dwLinkMode;
-    void* hPlayWnd;
+    HWND hPlayWnd;
     DWORD bBlocked;
     DWORD bPassbackRecord;
     BYTE byPreviewMode;
-    BYTE byStreamID[32];
+    BYTE byStreamID[STREAM_ID_LEN];
     BYTE byProtoType;
-    BYTE byRes1[2];
+    BYTE byRes1;
+    BYTE byVideoCodingType;
     DWORD dwDisplayBufNum;
     BYTE byNPQMode;
     BYTE byRecvMetaData;
     BYTE byDataType;
-    BYTE byRes[205];
+    BYTE byReconnect;
+    BYTE byRes[212];
 };
 
-struct ENCRYPT_INFO {
-    long nVideoEncryptType;
-    long nAudioEncryptType;
-    long nSetSecretKey;
+struct NET_DVR_TIME {
+    DWORD dwYear;
+    DWORD dwMonth;
+    DWORD dwDay;
+    DWORD dwHour;
+    DWORD dwMinute;
+    DWORD dwSecond;
 };
 
-struct FRAME_INFO {
-    int nWidth;
-    int nHeight;
-    int nStamp;
-    int nType;
-    int nFrameRate;
-    unsigned int dwFrameNum;
+struct NET_DVR_SPECIAL_FINDINFO_UNION {
+    BYTE byLenth[8];
 };
+
+struct NET_DVR_FILECOND_V40 {
+    LONG lChannel;
+    DWORD dwFileType;
+    DWORD dwIsLocked;
+    DWORD dwUseCardNo;
+    BYTE sCardNumber[CARDNUM_LEN_OUT];
+    NET_DVR_TIME struStartTime;
+    NET_DVR_TIME struStopTime;
+    BYTE byDrawFrame;
+    BYTE byFindType;
+    BYTE byQuickSearch;
+    BYTE bySpecialFindInfoType;
+    DWORD dwVolumeNum;
+    BYTE byWorkingDeviceGUID[GUID_LEN];
+    NET_DVR_SPECIAL_FINDINFO_UNION uSpecialFindInfo;
+    BYTE byStreamType;
+    BYTE byAudioFile;
+    BYTE byRes2[30];
+};
+
+struct NET_DVR_FINDDATA_V40 {
+    char sFileName[100];
+    NET_DVR_TIME struStartTime;
+    NET_DVR_TIME struStopTime;
+    DWORD dwFileSize;
+    char sCardNum[32];
+    BYTE byLocked;
+    BYTE byFileType;
+    BYTE byQuickSearch;
+    BYTE byRes;
+    DWORD dwFileIndex;
+    BYTE byStreamType;
+    BYTE byRes1[127];
+};
+
+struct NET_DVR_STREAM_INFO {
+    DWORD dwSize;
+    BYTE byID[STREAM_ID_LEN];
+    DWORD dwChannel;
+    BYTE byRes[32];
+};
+
+struct NET_DVR_VOD_PARA {
+    DWORD dwSize;
+    NET_DVR_STREAM_INFO struIDInfo;
+    NET_DVR_TIME struBeginTime;
+    NET_DVR_TIME struEndTime;
+    HWND hWnd;
+    BYTE byDrawFrame;
+    BYTE byVolumeType;
+    BYTE byVolumeNum;
+    BYTE byStreamType;
+    DWORD dwFileIndex;
+    BYTE byAudioFile;
+    BYTE byCourseFile;
+    BYTE byDownload;
+    BYTE byOptimalStreamType;
+    BYTE byUseAsyn;
+    BYTE byRes2[19];
+};
+
+static_assert(sizeof(NET_DVR_DEVICEINFO_V40) == 344);
+static_assert(sizeof(NET_DVR_AES_KEY_INFO) == 80);
+static_assert(sizeof(NET_DVR_PREVIEWINFO) == 280);
+static_assert(sizeof(NET_DVR_TIME) == 24);
+static_assert(sizeof(NET_DVR_FILECOND_V40) == 160);
+static_assert(sizeof(NET_DVR_FINDDATA_V40) == 320);
+static_assert(sizeof(NET_DVR_STREAM_INFO) == 72);
+static_assert(sizeof(NET_DVR_VOD_PARA) == 160);
 
 using REALDATACALLBACK = void (*)(LONG lRealHandle, DWORD dwDataType,
                                   BYTE* pBuffer, DWORD dwBufSize, void* pUser);
@@ -108,7 +187,52 @@ BOOL NET_DVR_SetSDKSecretKey(LONG lUserID, char* pSecretKey);
 LONG NET_DVR_RealPlay_V40(LONG lUserID, NET_DVR_PREVIEWINFO* lpPreviewInfo,
                           REALDATACALLBACK fRealDataCallBack_V30, void* pUser);
 BOOL NET_DVR_StopRealPlay(LONG lRealHandle);
+LONG NET_DVR_FindFile_V40(LONG lUserID, NET_DVR_FILECOND_V40* pFindCond);
+LONG NET_DVR_FindNextFile_V40(LONG lFindHandle,
+                              NET_DVR_FINDDATA_V40* lpFindData);
+BOOL NET_DVR_FindClose_V30(LONG lFindHandle);
+LONG NET_DVR_PlayBackByName(LONG lUserID, char* sPlayBackFileName, HWND hWnd);
+LONG NET_DVR_PlayBackByTime_V40(LONG lUserID,
+                                const NET_DVR_VOD_PARA* pVodPara);
+BOOL NET_DVR_SetPlayDataCallBack_V40(LONG lPlayHandle,
+                                     REALDATACALLBACK fPlayDataCallBack_V40,
+                                     void* pUser);
+BOOL NET_DVR_PlayBackControl_V40(LONG lPlayHandle, DWORD dwControlCode,
+                                 void* lpInBuffer, DWORD dwInLen,
+                                 void* lpOutBuffer, DWORD* lpOutLen);
+BOOL NET_DVR_GetPlayBackOsdTime(LONG lPlayHandle, NET_DVR_TIME* lpOsdTime);
+BOOL NET_DVR_StopPlayBack(LONG lPlayHandle);
+}
+#endif
 
+#if __has_include(<LinuxPlayM4.h>)
+#include <LinuxPlayM4.h>
+#else
+using PLAYM4_HWND = unsigned int;
+
+constexpr unsigned int STREAME_REALTIME = 0;
+constexpr unsigned int STREAME_FILE = 1;
+constexpr int ENCRYPT_AES_10R_VIDEO = 2;
+constexpr int T_YV12 = 3;
+constexpr int T_RGB32 = 7;
+constexpr unsigned int PLAYM4_BUF_OVER = 11;
+
+struct ENCRYPT_INFO {
+    long nVideoEncryptType;
+    long nAudioEncryptType;
+    long nSetSecretKey;
+};
+
+struct FRAME_INFO {
+    int nWidth;
+    int nHeight;
+    int nStamp;
+    int nType;
+    int nFrameRate;
+    unsigned int dwFrameNum;
+};
+
+extern "C" {
 int PlayM4_GetPort(int* nPort);
 int PlayM4_FreePort(int nPort);
 unsigned int PlayM4_GetLastError(int nPort);
@@ -130,6 +254,13 @@ int PlayM4_CloseStream(int nPort);
 }
 #endif
 
+#ifndef STREAME_FILE
+#define STREAME_FILE 1
+#endif
+#ifndef PLAYM4_BUF_OVER
+#define PLAYM4_BUF_OVER 11
+#endif
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -137,6 +268,7 @@ int PlayM4_CloseStream(int nPort);
 #include <chrono>
 #include <csignal>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -163,6 +295,7 @@ struct TestState {
     int frame_output_fd{-1};
     int target_fps{10};
     int stream_type{0};
+    bool playback_mode{false};
     std::mutex frame_output_mutex;
     std::chrono::steady_clock::time_point last_output_time{};
     std::atomic<int> player_port{-1};
@@ -179,6 +312,9 @@ struct TestState {
     std::atomic<bool> stream_verification_code_applied{false};
     std::atomic<unsigned int> sdk_error_code{0};
     std::atomic<int> decoder_error_code{0};
+    std::atomic<int> playback_progress{-1};
+    std::mutex osd_time_mutex;
+    std::string playback_osd_time;
     std::atomic<std::uint64_t> decoded_frames{0};
     std::atomic<std::uint64_t> system_headers{0};
     std::atomic<std::uint64_t> stream_chunks{0};
@@ -238,9 +374,14 @@ const char* decoder_error_name(int error) {
     }
 }
 
-void emit_diagnostics(const TestState& state, bool helper_mode) {
+void emit_diagnostics(TestState& state, bool helper_mode) {
     if (!helper_mode) {
         return;
+    }
+    std::string osd_time;
+    {
+        std::lock_guard<std::mutex> osd_lock(state.osd_time_mutex);
+        osd_time = state.playback_osd_time;
     }
     std::lock_guard<std::mutex> lock(g_diagnostics_mutex);
     std::cerr << "HIKVISION_DIAGNOSTIC {"
@@ -279,6 +420,9 @@ void emit_diagnostics(const TestState& state, bool helper_mode) {
               << state.decoded_frame_type.load()
               << ",\"decoded_frame_bytes\":"
               << state.decoded_frame_bytes.load()
+              << ",\"playback_progress\":"
+              << state.playback_progress.load()
+              << ",\"playback_osd_time\":\"" << osd_time << "\""
               << ",\"sdk_error_code\":" << state.sdk_error_code.load()
               << ",\"playctrl_error_code\":"
               << state.player_error_code.load()
@@ -325,6 +469,72 @@ bool copy_field(std::array<char, N>& destination, const std::string& value) {
     std::memcpy(destination.data(), value.data(), value.size());
     destination[value.size()] = '\0';
     return true;
+}
+
+bool parse_number_slice(std::string_view slice, unsigned int minimum,
+                        unsigned int maximum, DWORD& out) {
+    unsigned int value = 0;
+    const auto parsed =
+        std::from_chars(slice.data(), slice.data() + slice.size(), value);
+    if (parsed.ec != std::errc{} ||
+        parsed.ptr != slice.data() + slice.size() || value < minimum ||
+        value > maximum) {
+        return false;
+    }
+    out = static_cast<DWORD>(value);
+    return true;
+}
+
+bool parse_dvr_time(std::string_view text, NET_DVR_TIME& out) {
+    if (text.size() != 19 || text[4] != '-' || text[7] != '-' ||
+        (text[10] != ' ' && text[10] != 'T') || text[13] != ':' ||
+        text[16] != ':') {
+        return false;
+    }
+    return parse_number_slice(text.substr(0, 4), 1970, 2099, out.dwYear) &&
+           parse_number_slice(text.substr(5, 2), 1, 12, out.dwMonth) &&
+           parse_number_slice(text.substr(8, 2), 1, 31, out.dwDay) &&
+           parse_number_slice(text.substr(11, 2), 0, 23, out.dwHour) &&
+           parse_number_slice(text.substr(14, 2), 0, 59, out.dwMinute) &&
+           parse_number_slice(text.substr(17, 2), 0, 59, out.dwSecond);
+}
+
+std::string format_dvr_time(const NET_DVR_TIME& t) {
+    char buffer[32]{};
+    std::snprintf(buffer, sizeof(buffer), "%04u-%02u-%02u %02u:%02u:%02u",
+                  t.dwYear, t.dwMonth, t.dwDay, t.dwHour, t.dwMinute,
+                  t.dwSecond);
+    return buffer;
+}
+
+std::string json_escape(std::string_view text) {
+    std::string escaped;
+    escaped.reserve(text.size());
+    for (const unsigned char ch : text) {
+        switch (ch) {
+            case '\"':
+                escaped += "\\\"";
+                break;
+            case '\\':
+                escaped += "\\\\";
+                break;
+            case '\n':
+                escaped += "\\n";
+                break;
+            case '\r':
+                escaped += "\\r";
+                break;
+            case '\t':
+                escaped += "\\t";
+                break;
+            default:
+                if (ch >= 0x20) {
+                    escaped.push_back(static_cast<char>(ch));
+                }
+                break;
+        }
+    }
+    return escaped;
 }
 
 int hex_value(char value) {
@@ -568,20 +778,24 @@ void CALLBACK stream_callback(LONG, DWORD data_type, BYTE* buffer,
             set_player_error(state, 1);
             return;
         }
-        if (!PlayM4_SetStreamOpenMode(port, STREAME_REALTIME)) {
+        const unsigned int open_mode =
+            state->playback_mode ? STREAME_FILE : STREAME_REALTIME;
+        if (!PlayM4_SetStreamOpenMode(port, open_mode)) {
             set_player_error(state, 2, port);
             PlayM4_FreePort(port);
             return;
         }
-        if (!PlayM4_SetSecretKey(port, ENCRYPT_AES_10R_VIDEO,
-                                 state->stream_verification_code.data(),
-                                 state->player_key_length)) {
-            set_player_error(state, 3, port);
-            PlayM4_FreePort(port);
-            return;
+        if (state->stream_verification_code_configured.load()) {
+            if (!PlayM4_SetSecretKey(port, ENCRYPT_AES_10R_VIDEO,
+                                     state->stream_verification_code.data(),
+                                     state->player_key_length)) {
+                set_player_error(state, 3, port);
+                PlayM4_FreePort(port);
+                return;
+            }
+            state->decoder_key_status.store(1);
+            state->stream_verification_code_applied.store(true);
         }
-        state->decoder_key_status.store(1);
-        state->stream_verification_code_applied.store(true);
         if (!PlayM4_SetEncryptTypeCallBack(
                 port, 1, encrypt_type_callback, state)) {
             set_player_error(state, 4, port);
@@ -626,11 +840,142 @@ void CALLBACK stream_callback(LONG, DWORD data_type, BYTE* buffer,
         data_type == NET_DVR_AUDIOSTREAMDATA) {
         state->stream_chunks.fetch_add(1);
         state->stream_bytes.fetch_add(size);
-        if (!PlayM4_InputData(port, buffer, size)) {
+        bool input_ok = PlayM4_InputData(port, buffer, size) != 0;
+        if (!input_ok && state->playback_mode) {
+            for (int retry = 0;
+                 retry < 500 && g_keep_running &&
+                 PlayM4_GetLastError(port) == PLAYM4_BUF_OVER;
+                 ++retry) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                if (PlayM4_InputData(port, buffer, size)) {
+                    input_ok = true;
+                    break;
+                }
+            }
+        }
+        if (!input_ok) {
             state->input_failures.fetch_add(1);
             set_player_error(state, 8, port);
         }
     }
+}
+
+int list_recordings() {
+    const std::string host = env_or("HIKVISION_HOST", "192.168.101.8");
+    const std::string username = env_or("HIKVISION_USERNAME");
+    const std::string password = env_or("HIKVISION_PASSWORD");
+    const std::string start_text = env_or("HIKVISION_START_TIME");
+    const std::string end_text = env_or("HIKVISION_END_TIME");
+    long port = 8000;
+    long channel = 1;
+    NET_DVR_TIME start_time{};
+    NET_DVR_TIME end_time{};
+    if (username.empty() || password.empty()) {
+        std::cerr << "Set HIKVISION_USERNAME and HIKVISION_PASSWORD\n";
+        return 2;
+    }
+    if (!parse_integer("HIKVISION_PORT", 1, 65535, 8000, port) ||
+        !parse_integer("HIKVISION_CHANNEL", 1, 256, 1, channel) ||
+        !parse_dvr_time(start_text, start_time) ||
+        !parse_dvr_time(end_text, end_time)) {
+        std::cerr << "Invalid recording search parameters\n";
+        return 2;
+    }
+
+    NET_DVR_SetLogToFile(0, nullptr, TRUE);
+    if (!NET_DVR_Init()) {
+        std::cerr << "NET_DVR_Init failed: " << NET_DVR_GetLastError() << '\n';
+        return 3;
+    }
+    NET_DVR_SetConnectTime(5000, 3);
+    NET_DVR_SetReconnect(10000, TRUE);
+
+    NET_DVR_USER_LOGIN_INFO login_info{};
+    NET_DVR_DEVICEINFO_V40 device_info{};
+    if (!copy_field(login_info.sDeviceAddress, host) ||
+        !copy_field(login_info.sUserName, username) ||
+        !copy_field(login_info.sPassword, password)) {
+        std::cerr << "Host or credential exceeds the SDK field size\n";
+        NET_DVR_Cleanup();
+        return 2;
+    }
+    login_info.wPort = static_cast<WORD>(port);
+    login_info.bUseAsynLogin = FALSE;
+
+    const LONG user_id = NET_DVR_Login_V40(&login_info, &device_info);
+    if (user_id < 0) {
+        std::cerr << "NET_DVR_Login_V40 failed: " << NET_DVR_GetLastError()
+                  << '\n';
+        NET_DVR_Cleanup();
+        return 4;
+    }
+
+    NET_DVR_FILECOND_V40 file_cond{};
+    file_cond.lChannel = static_cast<LONG>(channel);
+    file_cond.dwFileType = 0xff;
+    file_cond.dwIsLocked = 0xff;
+    file_cond.dwUseCardNo = 0;
+    file_cond.struStartTime = start_time;
+    file_cond.struStopTime = end_time;
+
+    const LONG find_handle = NET_DVR_FindFile_V40(user_id, &file_cond);
+    if (find_handle < 0) {
+        std::cerr << "NET_DVR_FindFile_V40 failed: " << NET_DVR_GetLastError()
+                  << '\n';
+        NET_DVR_Logout(user_id);
+        NET_DVR_Cleanup();
+        return 12;
+    }
+
+    int exit_code = 0;
+    const auto search_start = std::chrono::steady_clock::now();
+    while (g_keep_running) {
+        NET_DVR_FINDDATA_V40 file_data{};
+        const LONG status = NET_DVR_FindNextFile_V40(find_handle, &file_data);
+        if (status == NET_DVR_ISFINDING) {
+            if (std::chrono::steady_clock::now() - search_start >=
+                std::chrono::seconds(30)) {
+                std::cerr << "NET_DVR_FindNextFile_V40 timed out\n";
+                exit_code = 12;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            continue;
+        }
+        if (status == NET_DVR_FILE_SUCCESS) {
+            const std::size_t name_len =
+                strnlen(file_data.sFileName, sizeof(file_data.sFileName));
+            const std::string_view file_name(file_data.sFileName, name_len);
+            std::cout << "HIKVISION_RECORDING {"
+                      << "\"name\":\"" << json_escape(file_name) << "\","
+                      << "\"channel\":" << channel << ","
+                      << "\"start_time\":\""
+                      << format_dvr_time(file_data.struStartTime) << "\","
+                      << "\"end_time\":\""
+                      << format_dvr_time(file_data.struStopTime) << "\","
+                      << "\"size_bytes\":" << file_data.dwFileSize << ","
+                      << "\"file_type\":"
+                      << static_cast<unsigned int>(file_data.byFileType) << ","
+                      << "\"locked\":"
+                      << (file_data.byLocked ? "true" : "false") << ","
+                      << "\"stream_type\":"
+                      << static_cast<unsigned int>(file_data.byStreamType)
+                      << "}\n";
+            continue;
+        }
+        if (status == NET_DVR_FILE_NOFIND || status == NET_DVR_NOMOREFILE) {
+            break;
+        }
+        std::cerr << "NET_DVR_FindNextFile_V40 failed with status " << status
+                  << " (SDK error " << NET_DVR_GetLastError() << ")\n";
+        exit_code = 12;
+        break;
+    }
+
+    NET_DVR_FindClose_V30(find_handle);
+    NET_DVR_Logout(user_id);
+    NET_DVR_Cleanup();
+    return exit_code;
 }
 
 }  // namespace
@@ -654,9 +999,23 @@ int main(int argc, char** argv) {
             std::cerr << "SDK initialization cleanup failed\n";
             return 5;
         }
-        std::cout << "HCNetSDK initialization and PlayCtrl port allocation ok\n";
+        std::cout << "HCNetSDK initialization and PlayCtrl port allocation ok "
+                     "(capabilities: preview,playback,recordings)\n";
         return 0;
     }
+    if (argc == 2 && std::string_view(argv[1]) == "--list-recordings") {
+        std::signal(SIGTERM, handle_signal);
+        std::signal(SIGINT, handle_signal);
+        return list_recordings();
+    }
+    if (argc > 1 && std::string_view(argv[1]) != "--playback") {
+        std::cerr << "Unknown helper option: " << argv[1] << '\n';
+        return 2;
+    }
+    const bool playback_mode =
+        (argc == 2 && std::string_view(argv[1]) == "--playback") ||
+        env_or("HIKVISION_PLAYBACK") == "1" ||
+        !env_or("HIKVISION_PLAYBACK_FILE").empty();
     const char* frame_fd_value = std::getenv("HIKVISION_FRAME_FD");
     const bool helper_mode = frame_fd_value != nullptr;
     std::signal(SIGTERM, handle_signal);
@@ -701,24 +1060,43 @@ int main(int argc, char** argv) {
     state.frame_output_fd = static_cast<int>(frame_fd);
     state.target_fps = static_cast<int>(target_fps);
     state.stream_type = static_cast<int>(stream_type);
+    state.playback_mode = playback_mode;
     state.play_window = static_cast<PLAYM4_HWND>(play_window);
     const std::string stream_verification_code =
         env_or("HIKVISION_STREAM_VERIFICATION_CODE");
     state.stream_verification_code_configured.store(
         !stream_verification_code.empty());
-    if (stream_verification_code.empty()) {
+    if (stream_verification_code.empty() && !playback_mode) {
         state.decoder_error_code.store(13);
         emit_diagnostics(state, helper_mode);
         std::cerr << "Set HIKVISION_STREAM_VERIFICATION_CODE to the "
                      "Platform Access stream encryption code\n";
         return 2;
     }
-    if (!copy_field(state.stream_verification_code,
+    if (!stream_verification_code.empty() &&
+        !copy_field(state.stream_verification_code,
                     stream_verification_code)) {
         state.decoder_error_code.store(14);
         emit_diagnostics(state, helper_mode);
         std::cerr << "HIKVISION_STREAM_VERIFICATION_CODE exceeds "
                      "NET_SDK_MAX_VERIFICATION_CODE_LEN bytes\n";
+        return 2;
+    }
+
+    const std::string playback_file = env_or("HIKVISION_PLAYBACK_FILE");
+    const std::string start_time_text = env_or("HIKVISION_START_TIME");
+    const std::string end_time_text = env_or("HIKVISION_END_TIME");
+    long playback_pos = 0;
+    NET_DVR_TIME playback_start_time{};
+    NET_DVR_TIME playback_end_time{};
+    const bool has_playback_time_range =
+        !start_time_text.empty() && !end_time_text.empty() &&
+        parse_dvr_time(start_time_text, playback_start_time) &&
+        parse_dvr_time(end_time_text, playback_end_time);
+    if (!parse_integer("HIKVISION_PLAYBACK_POS", 0, 99, 0, playback_pos) ||
+        (playback_mode && playback_file.empty() && !has_playback_time_range)) {
+        std::cerr << "Set HIKVISION_PLAYBACK_FILE or valid "
+                     "HIKVISION_START_TIME/HIKVISION_END_TIME for playback\n";
         return 2;
     }
 
@@ -769,52 +1147,152 @@ int main(int argc, char** argv) {
         state.aes_key_status.store(-1);
         state.sdk_error_code.store(NET_DVR_GetLastError());
         emit_diagnostics(state, helper_mode);
-        NET_DVR_Logout(user_id);
-        NET_DVR_Cleanup();
-        return 5;
-    }
-    state.aes_key_status.store(1);
-    emit_diagnostics(state, helper_mode);
-    if (!NET_DVR_SetSDKSecretKey(user_id, key.data())) {
-        state.sdk_key_status.store(-1);
-        state.sdk_error_code.store(NET_DVR_GetLastError());
+        if (!playback_mode) {
+            NET_DVR_Logout(user_id);
+            NET_DVR_Cleanup();
+            return 5;
+        }
+    } else {
+        state.aes_key_status.store(1);
         emit_diagnostics(state, helper_mode);
-        std::cerr << "NET_DVR_SetSDKSecretKey failed: "
-                  << NET_DVR_GetLastError() << '\n';
-        NET_DVR_Logout(user_id);
-        NET_DVR_Cleanup();
-        return 6;
+        if (!NET_DVR_SetSDKSecretKey(user_id, key.data())) {
+            state.sdk_key_status.store(-1);
+            state.sdk_error_code.store(NET_DVR_GetLastError());
+            emit_diagnostics(state, helper_mode);
+            std::cerr << "NET_DVR_SetSDKSecretKey failed: "
+                      << NET_DVR_GetLastError() << '\n';
+            if (!playback_mode) {
+                NET_DVR_Logout(user_id);
+                NET_DVR_Cleanup();
+                return 6;
+            }
+        } else {
+            state.sdk_key_status.store(1);
+            emit_diagnostics(state, helper_mode);
+            std::cout << "SDK decryption key configured from " << key_source
+                      << '\n';
+        }
     }
-    state.sdk_key_status.store(1);
-    emit_diagnostics(state, helper_mode);
-    std::cout << "SDK decryption key configured from " << key_source << '\n';
 
     state.player_key_length = static_cast<int>(player_key_length);
     state.target_fps = static_cast<int>(target_fps);
-    NET_DVR_PREVIEWINFO preview_info{};
-    preview_info.hPlayWnd = 0;
-    preview_info.lChannel = static_cast<LONG>(channel);
-    preview_info.dwStreamType = static_cast<DWORD>(stream_type);
-    preview_info.dwLinkMode = 0;
-    preview_info.bBlocked = FALSE;
-    preview_info.byProtoType = 0;
+    LONG stream_handle = -1;
+    bool opened_by_name = false;
+    if (playback_mode) {
+        const auto open_by_time = [&]() -> LONG {
+            if (!has_playback_time_range) {
+                return -1;
+            }
+            NET_DVR_VOD_PARA vod_para{};
+            vod_para.dwSize = sizeof(vod_para);
+            vod_para.struIDInfo.dwSize = sizeof(vod_para.struIDInfo);
+            vod_para.struIDInfo.dwChannel = static_cast<DWORD>(channel);
+            vod_para.struBeginTime = playback_start_time;
+            vod_para.struEndTime = playback_end_time;
+            vod_para.hWnd = 0;
+            vod_para.byStreamType = static_cast<BYTE>(stream_type);
+            vod_para.byOptimalStreamType = 1;
+            return NET_DVR_PlayBackByTime_V40(user_id, &vod_para);
+        };
+        const auto open_by_name = [&]() -> LONG {
+            if (playback_file.empty()) {
+                return -1;
+            }
+            char file_name[100]{};
+            if (!copy_field(file_name, playback_file)) {
+                return -1;
+            }
+            const LONG handle = NET_DVR_PlayBackByName(user_id, file_name, 0);
+            if (handle >= 0) {
+                opened_by_name = true;
+            }
+            return handle;
+        };
 
-    const LONG preview_handle = NET_DVR_RealPlay_V40(
-        user_id, &preview_info, stream_callback, &state);
-    if (preview_handle < 0) {
-        state.preview_status.store(-1);
-        state.sdk_error_code.store(NET_DVR_GetLastError());
-        emit_diagnostics(state, helper_mode);
-        std::cerr << "NET_DVR_RealPlay_V40 failed: "
-                  << NET_DVR_GetLastError() << '\n';
-        NET_DVR_Logout(user_id);
-        NET_DVR_Cleanup();
-        return 7;
+        if (playback_pos > 0 && has_playback_time_range) {
+            stream_handle = open_by_time();
+            if (stream_handle < 0) {
+                stream_handle = open_by_name();
+            }
+        } else {
+            stream_handle = open_by_name();
+            if (stream_handle < 0) {
+                stream_handle = open_by_time();
+            }
+        }
+        if (stream_handle < 0) {
+            state.preview_status.store(-1);
+            state.sdk_error_code.store(NET_DVR_GetLastError());
+            emit_diagnostics(state, helper_mode);
+            std::cerr << "NET_DVR_PlayBack failed: " << NET_DVR_GetLastError()
+                      << '\n';
+            NET_DVR_Logout(user_id);
+            NET_DVR_Cleanup();
+            return 7;
+        }
+        if (!NET_DVR_SetPlayDataCallBack_V40(stream_handle, stream_callback,
+                                             &state)) {
+            state.preview_status.store(-1);
+            state.sdk_error_code.store(NET_DVR_GetLastError());
+            emit_diagnostics(state, helper_mode);
+            std::cerr << "NET_DVR_SetPlayDataCallBack_V40 failed: "
+                      << NET_DVR_GetLastError() << '\n';
+            NET_DVR_StopPlayBack(stream_handle);
+            NET_DVR_Logout(user_id);
+            NET_DVR_Cleanup();
+            return 7;
+        }
+        DWORD start_offset = 0;
+        if (!NET_DVR_PlayBackControl_V40(stream_handle, NET_DVR_PLAYSTART,
+                                         nullptr, 0, nullptr, nullptr) &&
+            !NET_DVR_PlayBackControl_V40(stream_handle, NET_DVR_PLAYSTART,
+                                         &start_offset, sizeof(start_offset),
+                                         nullptr, nullptr)) {
+            state.preview_status.store(-1);
+            state.sdk_error_code.store(NET_DVR_GetLastError());
+            emit_diagnostics(state, helper_mode);
+            std::cerr << "NET_DVR_PLAYSTART failed: " << NET_DVR_GetLastError()
+                      << '\n';
+            NET_DVR_StopPlayBack(stream_handle);
+            NET_DVR_Logout(user_id);
+            NET_DVR_Cleanup();
+            return 7;
+        }
+        if (opened_by_name && playback_pos > 0) {
+            DWORD seek_pos = static_cast<DWORD>(playback_pos);
+            NET_DVR_PlayBackControl_V40(stream_handle, NET_DVR_PLAYSETPOS,
+                                        &seek_pos, sizeof(seek_pos), nullptr,
+                                        nullptr);
+        }
+        state.playback_progress.store(static_cast<int>(playback_pos));
+    } else {
+        NET_DVR_PREVIEWINFO preview_info{};
+        preview_info.hPlayWnd = 0;
+        preview_info.lChannel = static_cast<LONG>(channel);
+        preview_info.dwStreamType = static_cast<DWORD>(stream_type);
+        preview_info.dwLinkMode = 0;
+        preview_info.bBlocked = FALSE;
+        preview_info.byProtoType = 0;
+
+        stream_handle = NET_DVR_RealPlay_V40(user_id, &preview_info,
+                                             stream_callback, &state);
+        if (stream_handle < 0) {
+            state.preview_status.store(-1);
+            state.sdk_error_code.store(NET_DVR_GetLastError());
+            emit_diagnostics(state, helper_mode);
+            std::cerr << "NET_DVR_RealPlay_V40 failed: "
+                      << NET_DVR_GetLastError() << '\n';
+            NET_DVR_Logout(user_id);
+            NET_DVR_Cleanup();
+            return 7;
+        }
     }
 
     state.preview_status.store(1);
     emit_diagnostics(state, helper_mode);
-    std::cout << "preview=started channel=" << channel
+    std::cout << (playback_mode ? "playback=started channel="
+                                : "preview=started channel=")
+              << channel
               << " stream=" << (stream_type == 0 ? "main" : "sub")
               << " duration_seconds=" << run_seconds << '\n';
     const auto start_time = std::chrono::steady_clock::now();
@@ -828,7 +1306,13 @@ int main(int argc, char** argv) {
             }
             if (state.decoded_frames.load() == 0 &&
                 now - start_time >= std::chrono::seconds(15)) {
-                state.decoder_error_code.store(9);
+                if (playback_mode &&
+                    !state.stream_verification_code_configured.load() &&
+                    state.video_encrypt_type.load() > 0) {
+                    state.decoder_error_code.store(13);
+                } else {
+                    state.decoder_error_code.store(9);
+                }
                 emit_diagnostics(state, true);
                 break;
             }
@@ -837,6 +1321,36 @@ int main(int argc, char** argv) {
                 break;
             }
             if (now - last_diagnostics_time >= std::chrono::seconds(1)) {
+                if (playback_mode) {
+                    NET_DVR_TIME osd_time{};
+                    if (NET_DVR_GetPlayBackOsdTime(stream_handle, &osd_time) &&
+                        osd_time.dwYear >= 2000 && osd_time.dwMonth >= 1 &&
+                        osd_time.dwMonth <= 12 && osd_time.dwDay >= 1 &&
+                        osd_time.dwDay <= 31) {
+                        std::lock_guard<std::mutex> osd_lock(
+                            state.osd_time_mutex);
+                        state.playback_osd_time = format_dvr_time(osd_time);
+                    }
+                    DWORD progress = 0;
+                    DWORD out_len = 0;
+                    if (NET_DVR_PlayBackControl_V40(
+                            stream_handle, NET_DVR_PLAYGETPOS, nullptr, 0,
+                            &progress, &out_len)) {
+                        state.playback_progress.store(
+                            static_cast<int>(progress));
+                        if (progress == 100) {
+                            std::this_thread::sleep_for(
+                                std::chrono::milliseconds(400));
+                            emit_diagnostics(state, true);
+                            break;
+                        }
+                        if (progress > 100) {
+                            state.sdk_error_code.store(NET_DVR_GetLastError());
+                            emit_diagnostics(state, true);
+                            break;
+                        }
+                    }
+                }
                 emit_diagnostics(state, true);
                 last_diagnostics_time = now;
             }
@@ -846,7 +1360,8 @@ int main(int argc, char** argv) {
         std::this_thread::sleep_for(std::chrono::seconds(run_seconds));
     }
 
-    const BOOL stopped = NET_DVR_StopRealPlay(preview_handle);
+    const BOOL stopped = playback_mode ? NET_DVR_StopPlayBack(stream_handle)
+                                       : NET_DVR_StopRealPlay(stream_handle);
     const int player_port = state.player_port.exchange(-1);
     unsigned int last_player_error = 0;
     if (player_port >= 0) {

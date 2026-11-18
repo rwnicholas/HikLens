@@ -55,6 +55,11 @@ incompatible dependencies instead of silently switching backends.
 The SDK and PlayCtrl run in a separate helper process with a headless EGL
 configuration; the Qt application keeps its normal Wayland or X11 session.
 The existing HTTP and RTSP/FFmpeg backends do not depend on this SDK.
+In addition to live preview, the helper supports searching recorded DVR video
+segments (`--list-recordings` via `NET_DVR_FindFile_V40` /
+`NET_DVR_FindNextFile_V40`) and streaming recorded video playback (`--playback`
+via `NET_DVR_PlayBackByName` and `NET_DVR_PlayBackByTime_V40`) for the
+application's **Recordings** dialog.
 
 ## Encryption and validation
 

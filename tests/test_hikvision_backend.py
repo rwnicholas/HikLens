@@ -94,12 +94,16 @@ class SignalEvents:
             "fps_updated",
             "log_event",
             "diagnostics_updated",
+            "playback_finished",
+            "progress_updated",
+            "osd_time_updated",
         ):
-            events = []
-            getattr(worker, name).connect(
-                lambda *args, target=events: target.append(args)
-            )
-            self.events[name] = events
+            if hasattr(worker, name):
+                events = []
+                getattr(worker, name).connect(
+                    lambda *args, target=events: target.append(args)
+                )
+                self.events[name] = events
 
     def __getattr__(self, name):
         return self.events[name]
@@ -355,6 +359,69 @@ class HikvisionBackendTests(unittest.TestCase):
         self.assertEqual(
             worker.test_events.status_changed[-1],
             (1, "Online (Hikvision SDK)", True),
+        )
+
+    def test_playback_worker_runs_once_and_emits_progress_and_completion(self):
+        from types import SimpleNamespace
+
+        config = SimpleNamespace(
+            ip="127.0.0.1",
+            sdk_port=8000,
+            username="user",
+            password="secret",
+            stream_verification_code="stream-code",
+            sdk_directory="/external/sdk",
+        )
+        player = hikvision_backend.HikvisionPlaybackPlayer(
+            channel=2,
+            config=config,
+            start_time="2026-11-18 10:07:30",
+            end_time="2026-11-18 10:15:00",
+            recording_name="ch02_0001",
+            stream_type=0,
+            playback_position_percent=50,
+        )
+        player.test_events = SignalEvents(player)
+        process = types.SimpleNamespace(
+            stderr=io.BytesIO(
+                b'HIKVISION_DIAGNOSTIC {"playback_progress":45,"playback_osd_time":"2026-11-18 10:08:12","preview":"ok"}\n'
+            ),
+            poll=lambda: 0,
+            wait=lambda timeout=None: 0,
+        )
+        installation = types.SimpleNamespace(
+            stream_helper="/external/helper",
+            library_directory="/external/sdk/lib",
+            component_directory="/external/sdk/lib/HCNetSDKCom",
+        )
+        with patch.object(
+            hikvision_backend,
+            "discover_hikvision_sdk",
+            return_value=installation,
+        ), patch.object(
+            hikvision_backend.subprocess, "Popen", return_value=process
+        ) as popen:
+            player.start()
+            self.wait_for_worker(player)
+
+        self.assertEqual(
+            popen.call_args.args[0],
+            ["/external/helper", "--playback"],
+        )
+        child_env = popen.call_args.kwargs["env"]
+        self.assertEqual(child_env["HIKVISION_PLAYBACK"], "1")
+        self.assertEqual(child_env["HIKVISION_PLAYBACK_FILE"], "ch02_0001")
+        self.assertEqual(child_env["HIKVISION_START_TIME"], "2026-11-18 10:07:30")
+        self.assertEqual(child_env["HIKVISION_END_TIME"], "2026-11-18 10:15:00")
+        self.assertEqual(child_env["HIKVISION_PLAYBACK_POS"], "50")
+        self.assertIn((2, 45), player.test_events.progress_updated)
+        self.assertIn(
+            (2, "2026-11-18 10:08:12"), player.test_events.osd_time_updated
+        )
+        self.assertEqual(player.test_events.progress_updated[-1], (2, 100))
+        self.assertEqual(
+            player.test_events.playback_finished[-1],
+            (2, True, "Playback finished."),
         )
 
 

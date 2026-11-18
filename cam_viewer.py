@@ -31,7 +31,7 @@ from requests.auth import HTTPDigestAuth
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import (
     Qt, QBuffer, QIODevice, QThread, Signal, Slot, QTimer, QSize, QPoint,
-    QStandardPaths, QUrl,
+    QDateTime, QStandardPaths, QUrl,
 )
 from PySide6.QtGui import (
     QImage,
@@ -49,7 +49,7 @@ from PySide6.QtWidgets import (
     QGridLayout, QLabel, QPushButton, QComboBox, QInputDialog, QSlider, QStatusBar,
     QToolBar, QFrame, QFileDialog, QMessageBox, QDialog, QLineEdit,
     QFormLayout, QDialogButtonBox, QStackedWidget, QSplitter,
-    QListWidget, QListWidgetItem, QCheckBox
+    QListWidget, QListWidgetItem, QCheckBox, QDateTimeEdit,
 )
 from PySide6.QtSvg import QSvgRenderer
 
@@ -58,11 +58,14 @@ from capture_backends import (
     create_capture_backend,
     supports_selectable_fps,
 )
-from hikvision_backend import HikvisionCameraPlayer
+from hikvision_backend import HikvisionCameraPlayer, HikvisionPlaybackPlayer
 from hikvision_sdk import (
     HIKVISION_SDK_DOWNLOAD_URL,
+    HikvisionRecording,
     HikvisionSDKError,
     build_hikvision_helper,
+    list_hikvision_recordings,
+    recording_file_type_label,
 )
 
 
@@ -74,6 +77,7 @@ _ICON_SVGS = {
     "pause": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#cbd5e1" d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg>',
     "play": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#cbd5e1" d="M6 3.8v16.4L20 12z"/></svg>',
     "record": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="#ef4444"/></svg>',
+    "playback": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path fill="#38bdf8" stroke="none" d="M10 8.5v7l6-3.5-6-3.5z"/></svg>',
     "stop": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2" fill="#ef4444"/></svg>',
     "auto": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#fbbf24" d="M13.5 2 5 13h5l-.5 9L19 10h-5z"/></svg>',
     "max": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#fb923c" d="m12 2 2.8 6.1 6.7.7-5 4.5 1.4 6.6-5.9-3.4-5.9 3.4 1.4-6.6-5-4.5 6.7-.7z"/></svg>',
@@ -1469,6 +1473,973 @@ class CameraSelectionDialog(QDialog):
         self.accept()
 
 
+class RecordingTimelineWidget(QWidget):
+    """Interactive visual timeline scrubber for seeking inside a DVR capture."""
+
+    seek_requested = Signal(int)
+    scrub_changed = Signal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(64)
+        self.setMaximumHeight(74)
+        self.setMouseTracking(True)
+        self.setCursor(Qt.PointingHandCursor)
+
+        self._start_dt = QDateTime()
+        self._end_dt = QDateTime()
+        self._duration_seconds = 0
+        self._offset_seconds = 0
+        self._hover_seconds: int | None = None
+        self._dragging = False
+        self._segments: list[tuple[int, int, int]] = []
+
+    @property
+    def duration_seconds(self) -> int:
+        return self._duration_seconds
+
+    @property
+    def offset_seconds(self) -> int:
+        return self._offset_seconds
+
+    @property
+    def is_dragging(self) -> bool:
+        return self._dragging
+
+    def set_time_span(
+        self,
+        start_dt: QDateTime,
+        end_dt: QDateTime,
+        segments: list[tuple[int, int, int]] | None = None,
+    ):
+        self._start_dt = QDateTime(start_dt)
+        self._end_dt = QDateTime(end_dt)
+        if self._start_dt.isValid() and self._end_dt.isValid():
+            self._duration_seconds = max(0, int(self._start_dt.secsTo(self._end_dt)))
+        else:
+            self._duration_seconds = 0
+        self._offset_seconds = 0
+        self._hover_seconds = None
+        self._segments = list(segments or [])
+        self.update()
+
+    def set_offset_seconds(self, offset_seconds: int):
+        if self._duration_seconds <= 0:
+            self._offset_seconds = 0
+        else:
+            self._offset_seconds = max(
+                0, min(self._duration_seconds, int(offset_seconds))
+            )
+        self.update()
+
+    def timestamp_at_offset(self, offset_seconds: int) -> QDateTime:
+        if not self._start_dt.isValid():
+            return QDateTime()
+        clamped = max(0, min(self._duration_seconds, int(offset_seconds)))
+        return self._start_dt.addSecs(clamped)
+
+    def current_timestamp(self) -> QDateTime:
+        return self.timestamp_at_offset(self._offset_seconds)
+
+    def _track_bounds(self) -> tuple[int, int, int, int]:
+        margin_x = 16
+        track_y = 24
+        track_h = 16
+        track_w = max(1, self.width() - (2 * margin_x))
+        return margin_x, track_y, track_w, track_h
+
+    def _x_to_offset(self, x_pos: float) -> int:
+        if self._duration_seconds <= 0:
+            return 0
+        track_x, _track_y, track_w, _track_h = self._track_bounds()
+        ratio = max(0.0, min(1.0, (x_pos - track_x) / float(track_w)))
+        return int(round(ratio * self._duration_seconds))
+
+    def _offset_to_x(self, offset_seconds: int) -> int:
+        track_x, _track_y, track_w, _track_h = self._track_bounds()
+        if self._duration_seconds <= 0:
+            return track_x
+        ratio = max(
+            0.0, min(1.0, float(offset_seconds) / float(self._duration_seconds))
+        )
+        return track_x + int(round(ratio * track_w))
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and self._duration_seconds > 0:
+            self._dragging = True
+            self._offset_seconds = self._x_to_offset(event.position().x())
+            self.scrub_changed.emit(self._offset_seconds)
+            self.update()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._duration_seconds > 0:
+            hovered = self._x_to_offset(event.position().x())
+            self._hover_seconds = hovered
+            if self._dragging:
+                self._offset_seconds = hovered
+                self.scrub_changed.emit(self._offset_seconds)
+            self.update()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self._dragging:
+            self._dragging = False
+            self._offset_seconds = self._x_to_offset(event.position().x())
+            self.scrub_changed.emit(self._offset_seconds)
+            self.seek_requested.emit(self._offset_seconds)
+            self.update()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def leaveEvent(self, event):
+        self._hover_seconds = None
+        self.update()
+        super().leaveEvent(event)
+
+    def paintEvent(self, _event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        painter.fillRect(self.rect(), QColor("#12151c"))
+        border_pen = QPen(QColor("#232936"), 1)
+        painter.setPen(border_pen)
+        painter.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 6, 6)
+
+        track_x, track_y, track_w, track_h = self._track_bounds()
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#1f2937"))
+        painter.drawRoundedRect(track_x, track_y, track_w, track_h, 5, 5)
+
+        if self._duration_seconds <= 0 or not self._start_dt.isValid():
+            painter.setPen(QColor("#64748b"))
+            font = QFont(self.font())
+            font.setPointSize(9)
+            painter.setFont(font)
+            painter.drawText(
+                self.rect(),
+                Qt.AlignCenter,
+                "Select a capture to scrub its timeline",
+            )
+            return
+
+        # Draw recorded segment bars inside the timeline window
+        if self._segments:
+            for seg_start, seg_end, file_type in self._segments:
+                x1 = self._offset_to_x(seg_start)
+                x2 = max(x1 + 2, self._offset_to_x(seg_end))
+                color = QColor("#1e40af") if file_type == 0 else QColor("#b45309")
+                painter.setBrush(color)
+                painter.drawRoundedRect(x1, track_y + 2, x2 - x1, track_h - 4, 3, 3)
+        else:
+            painter.setBrush(QColor("#1e3a8a"))
+            painter.drawRoundedRect(track_x, track_y + 2, track_w, track_h - 4, 4, 4)
+
+        # Draw elapsed / selected region up to the playhead
+        playhead_x = self._offset_to_x(self._offset_seconds)
+        if playhead_x > track_x:
+            painter.setBrush(QColor("#3b82f6"))
+            painter.drawRoundedRect(
+                track_x,
+                track_y + 2,
+                playhead_x - track_x,
+                track_h - 4,
+                4,
+                4,
+            )
+
+        # Draw time ruler ticks and HH:mm:ss labels below the track
+        tick_count = 6
+        font = QFont(self.font())
+        font.setPointSize(8)
+        painter.setFont(font)
+        for idx in range(tick_count + 1):
+            ratio = idx / float(tick_count)
+            tx = track_x + int(round(ratio * track_w))
+            painter.setPen(QPen(QColor("#475569"), 1))
+            painter.drawLine(tx, track_y + track_h + 1, tx, track_y + track_h + 5)
+
+            tick_secs = int(round(ratio * self._duration_seconds))
+            tick_label = self.timestamp_at_offset(tick_secs).toString("HH:mm:ss")
+            text_w = 56
+            if idx == 0:
+                text_x = track_x
+                align = Qt.AlignLeft | Qt.AlignVCenter
+            elif idx == tick_count:
+                text_x = tx - text_w
+                align = Qt.AlignRight | Qt.AlignVCenter
+            else:
+                text_x = tx - (text_w // 2)
+                align = Qt.AlignHCenter | Qt.AlignVCenter
+            painter.setPen(QColor("#94a3b8"))
+            painter.drawText(
+                text_x,
+                track_y + track_h + 6,
+                text_w,
+                16,
+                int(align),
+                tick_label,
+            )
+
+        # Draw hover indicator if the cursor is over the timeline
+        if self._hover_seconds is not None and not self._dragging:
+            hover_x = self._offset_to_x(self._hover_seconds)
+            painter.setPen(QPen(QColor("#93c5fd"), 1, Qt.DashLine))
+            painter.drawLine(hover_x, track_y - 4, hover_x, track_y + track_h + 4)
+            hover_text = self.timestamp_at_offset(self._hover_seconds).toString(
+                "HH:mm:ss"
+            )
+            pill_w = 58
+            pill_x = max(4, min(self.width() - pill_w - 4, hover_x - (pill_w // 2)))
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor("#1e293b"))
+            painter.drawRoundedRect(pill_x, 3, pill_w, 16, 4, 4)
+            painter.setPen(QColor("#bfdbfe"))
+            painter.drawText(pill_x, 3, pill_w, 16, Qt.AlignCenter, hover_text)
+
+        # Draw playhead line, handle, and current timestamp badge
+        painter.setPen(QPen(QColor("#f8fafc"), 2))
+        painter.drawLine(playhead_x, track_y - 3, playhead_x, track_y + track_h + 3)
+        painter.setBrush(QColor("#60a5fa"))
+        painter.drawEllipse(QPoint(playhead_x, track_y + (track_h // 2)), 6, 6)
+
+        badge_text = self.current_timestamp().toString("HH:mm:ss")
+        badge_w = 62
+        badge_x = max(4, min(self.width() - badge_w - 4, playhead_x - (badge_w // 2)))
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#2563eb"))
+        painter.drawRoundedRect(badge_x, 3, badge_w, 17, 4, 4)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.setPen(QColor("#ffffff"))
+        painter.drawText(badge_x, 3, badge_w, 17, Qt.AlignCenter, badge_text)
+
+
+class RecordingsDialog(QDialog):
+    """Browse and play back previous DVR recordings using the Hikvision SDK."""
+
+    def __init__(
+        self,
+        config: DVRConfig,
+        artifact_directory: Path,
+        default_channel: int | None = None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.config = config
+        self.artifact_directory = artifact_directory
+        self.recordings: list[HikvisionRecording] = []
+        self.player: HikvisionPlaybackPlayer | None = None
+        self.is_paused = False
+        self._capture_channel: int | None = None
+        self._capture_recording_name: str = ""
+        self._capture_start_dt = QDateTime()
+        self._capture_end_dt = QDateTime()
+        self._playback_started_receiving_frames = False
+
+        self.setWindowTitle("DVR Recordings Playback (Hikvision SDK)")
+        self.resize(1120, 740)
+        self.setMinimumSize(840, 560)
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #0b0e14;
+                color: #e2e8f0;
+            }
+            QLabel {
+                color: #cbd5e1;
+            }
+            QComboBox, QDateTimeEdit {
+                background-color: #1f2937;
+                color: #f8fafc;
+                border: 1px solid #374151;
+                border-radius: 5px;
+                padding: 4px 8px;
+                font-weight: bold;
+            }
+            QPushButton {
+                background-color: #1f2937;
+                color: #e2e8f0;
+                border: 1px solid #374151;
+                border-radius: 5px;
+                padding: 5px 12px;
+                font-size: 12px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #374151;
+                border-color: #4b5563;
+            }
+            QPushButton:checked {
+                background-color: #2563eb;
+                border-color: #3b82f6;
+                color: white;
+            }
+            QListWidget {
+                background-color: #12151c;
+                color: #cbd5e1;
+                border: 1px solid #232936;
+                border-radius: 6px;
+            }
+            QSlider::groove:horizontal {
+                height: 6px;
+                background: #1f2937;
+                border-radius: 3px;
+            }
+            QSlider::sub-page:horizontal {
+                background: #2563eb;
+                border-radius: 3px;
+            }
+            QSlider::handle:horizontal {
+                background: #60a5fa;
+                border: 1px solid #f8fafc;
+                width: 14px;
+                margin: -5px 0;
+                border-radius: 7px;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+        controls_row = QHBoxLayout()
+
+        controls_row.addWidget(QLabel("Camera:"))
+        self.combo_channel = QComboBox()
+        for channel in self.config.channels:
+            self.combo_channel.addItem(
+                _make_icon("camera"), f"Camera {channel}", channel
+            )
+        if default_channel in self.config.channels:
+            self.combo_channel.setCurrentIndex(
+                self.config.channels.index(default_channel)
+            )
+        self.combo_channel.currentIndexChanged.connect(
+            self._on_selected_channel_changed
+        )
+        controls_row.addWidget(self.combo_channel)
+
+        controls_row.addWidget(QLabel("From:"))
+        now = QDateTime.currentDateTime()
+        self.start_time_edit = QDateTimeEdit(now.addDays(-1))
+        self.start_time_edit.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
+        self.start_time_edit.setCalendarPopup(True)
+        controls_row.addWidget(self.start_time_edit)
+
+        controls_row.addWidget(QLabel("To:"))
+        self.end_time_edit = QDateTimeEdit(now)
+        self.end_time_edit.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
+        self.end_time_edit.setCalendarPopup(True)
+        controls_row.addWidget(self.end_time_edit)
+
+        controls_row.addWidget(QLabel("Stream:"))
+        self.combo_stream = QComboBox()
+        self.combo_stream.addItem("Main Stream", 0)
+        self.combo_stream.addItem("Sub-Stream", 1)
+        controls_row.addWidget(self.combo_stream)
+
+        self.btn_search = QPushButton("Search Recordings")
+        self.btn_search.setIcon(_make_icon("playback"))
+        self.btn_search.clicked.connect(self._search_recordings)
+        controls_row.addWidget(self.btn_search)
+
+        self.btn_play_range = QPushButton("Play Time Range")
+        self.btn_play_range.setIcon(_make_icon("play"))
+        self.btn_play_range.clicked.connect(self._play_time_range)
+        controls_row.addWidget(self.btn_play_range)
+        controls_row.addStretch()
+        layout.addLayout(controls_row)
+
+        splitter = QSplitter(Qt.Horizontal)
+        layout.addWidget(splitter, 1)
+
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        self.lbl_results = QLabel("Recorded segments:")
+        left_layout.addWidget(self.lbl_results)
+        self.recording_list = QListWidget()
+        self.recording_list.currentRowChanged.connect(
+            self._on_selected_recording_changed
+        )
+        self.recording_list.itemDoubleClicked.connect(
+            lambda _item: self._play_selected_recording()
+        )
+        left_layout.addWidget(self.recording_list, 1)
+        splitter.addWidget(left_panel)
+
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        initial_channel = int(self.combo_channel.currentData())
+        self.playback_tile = CameraViewWidget(initial_channel)
+        self.playback_tile.video_label.setText(
+            "Search for recordings and select a segment, or click Play Time Range."
+        )
+        self.playback_tile.snapshot_requested.connect(
+            self._save_playback_snapshot
+        )
+        right_layout.addWidget(self.playback_tile, 1)
+
+        # Interactive capture timeline section
+        timeline_header = QHBoxLayout()
+        self.lbl_timeline_start = QLabel("Start: --:--:--")
+        timeline_header.addWidget(self.lbl_timeline_start)
+        timeline_header.addStretch()
+        self.lbl_timeline_current = QLabel("Selected Time: --")
+        self.lbl_timeline_current.setStyleSheet(
+            "color: #60a5fa; font-weight: bold;"
+        )
+        timeline_header.addWidget(self.lbl_timeline_current)
+        timeline_header.addStretch()
+        self.lbl_timeline_end = QLabel("End: --:--:--")
+        timeline_header.addWidget(self.lbl_timeline_end)
+        right_layout.addLayout(timeline_header)
+
+        self.timeline_widget = RecordingTimelineWidget()
+        self.timeline_widget.scrub_changed.connect(
+            self._on_timeline_scrub_changed
+        )
+        self.timeline_widget.seek_requested.connect(self.seek_to_timeline_offset)
+        right_layout.addWidget(self.timeline_widget)
+
+        scrubber_row = QHBoxLayout()
+        self.btn_seek_back = QPushButton("-30s")
+        self.btn_seek_back.setToolTip("Jump backward 30 seconds in this capture")
+        self.btn_seek_back.setEnabled(False)
+        self.btn_seek_back.clicked.connect(lambda: self.skip_seconds(-30))
+        scrubber_row.addWidget(self.btn_seek_back)
+
+        self.timeline_slider = QSlider(Qt.Horizontal)
+        self.timeline_slider.setRange(0, 0)
+        self.timeline_slider.setEnabled(False)
+        self.timeline_slider.sliderMoved.connect(self._on_slider_moved)
+        self.timeline_slider.sliderReleased.connect(self._on_slider_released)
+        scrubber_row.addWidget(self.timeline_slider, 1)
+
+        self.btn_seek_forward = QPushButton("+30s")
+        self.btn_seek_forward.setToolTip("Jump forward 30 seconds in this capture")
+        self.btn_seek_forward.setEnabled(False)
+        self.btn_seek_forward.clicked.connect(lambda: self.skip_seconds(30))
+        scrubber_row.addWidget(self.btn_seek_forward)
+        right_layout.addLayout(scrubber_row)
+
+        player_controls = QHBoxLayout()
+        self.btn_play_selected = QPushButton("Play Selected")
+        self.btn_play_selected.setIcon(_make_icon("play"))
+        self.btn_play_selected.clicked.connect(self._play_selected_recording)
+        player_controls.addWidget(self.btn_play_selected)
+
+        self.btn_pause = QPushButton("Pause")
+        self.btn_pause.setIcon(_make_icon("pause"))
+        self.btn_pause.setCheckable(True)
+        self.btn_pause.setEnabled(False)
+        self.btn_pause.clicked.connect(self._toggle_pause)
+        player_controls.addWidget(self.btn_pause)
+
+        self.btn_stop = QPushButton("Stop")
+        self.btn_stop.setIcon(_make_icon("stop"))
+        self.btn_stop.setEnabled(False)
+        self.btn_stop.clicked.connect(self.stop_playback)
+        player_controls.addWidget(self.btn_stop)
+
+        self.lbl_status = QLabel("Idle")
+        player_controls.addWidget(self.lbl_status, 1)
+
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.close)
+        player_controls.addWidget(btn_close)
+
+        right_layout.addLayout(player_controls)
+        splitter.addWidget(right_panel)
+        splitter.setSizes([360, 760])
+
+        self.playback_clock_timer = QTimer(self)
+        self.playback_clock_timer.setInterval(1000)
+        self.playback_clock_timer.timeout.connect(self._advance_playback_clock)
+
+    @staticmethod
+    def _parse_datetime(value: str) -> QDateTime:
+        return QDateTime.fromString(value.strip(), "yyyy-MM-dd HH:mm:ss")
+
+    @staticmethod
+    def _format_duration(seconds: int) -> str:
+        seconds = max(0, int(seconds))
+        hours, rem = divmod(seconds, 3600)
+        minutes, secs = divmod(rem, 60)
+        if hours > 0:
+            return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+        return f"{minutes:02d}:{secs:02d}"
+
+    def _set_timeline_capture(
+        self,
+        channel: int,
+        start_time: str,
+        end_time: str,
+        recording_name: str = "",
+        segments: list[tuple[int, int, int]] | None = None,
+        initial_offset_seconds: int = 0,
+    ):
+        start_dt = self._parse_datetime(start_time)
+        end_dt = self._parse_datetime(end_time)
+        self._capture_channel = channel
+        self._capture_recording_name = recording_name
+        self._capture_start_dt = start_dt
+        self._capture_end_dt = end_dt
+
+        self.timeline_widget.set_time_span(start_dt, end_dt, segments=segments)
+        duration = self.timeline_widget.duration_seconds
+        has_span = duration > 0 and start_dt.isValid() and end_dt.isValid()
+        self.timeline_slider.blockSignals(True)
+        self.timeline_slider.setRange(0, max(0, duration))
+        self.timeline_slider.setValue(0)
+        self.timeline_slider.blockSignals(False)
+        self.timeline_slider.setEnabled(has_span)
+        self.btn_seek_back.setEnabled(has_span)
+        self.btn_seek_forward.setEnabled(has_span)
+
+        if has_span:
+            self.lbl_timeline_start.setText(
+                f"Start: {start_dt.toString('yyyy-MM-dd HH:mm:ss')}"
+            )
+            self.lbl_timeline_end.setText(
+                f"End: {end_dt.toString('yyyy-MM-dd HH:mm:ss')}"
+            )
+            self._set_timeline_offset(initial_offset_seconds)
+        else:
+            self.lbl_timeline_start.setText("Start: --:--:--")
+            self.lbl_timeline_current.setText("Selected Time: --")
+            self.lbl_timeline_end.setText("End: --:--:--")
+
+    def _set_timeline_offset(self, offset_seconds: int):
+        duration = self.timeline_widget.duration_seconds
+        clamped = max(0, min(duration, int(offset_seconds)))
+        self.timeline_widget.set_offset_seconds(clamped)
+        if not self.timeline_slider.isSliderDown():
+            self.timeline_slider.blockSignals(True)
+            self.timeline_slider.setValue(clamped)
+            self.timeline_slider.blockSignals(False)
+        self._update_timeline_current_label(clamped)
+
+    def _update_timeline_current_label(self, offset_seconds: int):
+        duration = self.timeline_widget.duration_seconds
+        ts = self.timeline_widget.timestamp_at_offset(offset_seconds)
+        if not ts.isValid() or duration <= 0:
+            self.lbl_timeline_current.setText("Selected Time: --")
+            return
+        elapsed = self._format_duration(offset_seconds)
+        total = self._format_duration(duration)
+        self.lbl_timeline_current.setText(
+            f"Selected Time: {ts.toString('yyyy-MM-dd HH:mm:ss')} ({elapsed} / {total})"
+        )
+
+    def _on_selected_recording_changed(self, row: int):
+        if not (0 <= row < len(self.recordings)):
+            return
+        recording = self.recordings[row]
+        start_dt = self._parse_datetime(recording.start_time)
+        end_dt = self._parse_datetime(recording.end_time)
+        duration = max(0, int(start_dt.secsTo(end_dt))) if start_dt.isValid() and end_dt.isValid() else 0
+        segments = [(0, duration, recording.file_type)] if duration > 0 else []
+        self._set_timeline_capture(
+            channel=recording.channel,
+            start_time=recording.start_time,
+            end_time=recording.end_time,
+            recording_name=recording.name,
+            segments=segments,
+            initial_offset_seconds=0,
+        )
+
+    def _on_timeline_scrub_changed(self, offset_seconds: int):
+        self.timeline_slider.blockSignals(True)
+        self.timeline_slider.setValue(offset_seconds)
+        self.timeline_slider.blockSignals(False)
+        self._update_timeline_current_label(offset_seconds)
+
+    def _on_slider_moved(self, value: int):
+        self.timeline_widget.set_offset_seconds(value)
+        self._update_timeline_current_label(value)
+
+    def _on_slider_released(self):
+        self.seek_to_timeline_offset(self.timeline_slider.value())
+
+    def skip_seconds(self, delta_seconds: int):
+        if self.timeline_widget.duration_seconds <= 0:
+            return
+        target = self.timeline_widget.offset_seconds + int(delta_seconds)
+        self.seek_to_timeline_offset(target)
+
+    def seek_to_timeline_offset(self, offset_seconds: int):
+        duration = self.timeline_widget.duration_seconds
+        if (
+            duration <= 0
+            or not self._capture_start_dt.isValid()
+            or not self._capture_end_dt.isValid()
+        ):
+            return
+        clamped = max(0, min(duration, int(offset_seconds)))
+        if clamped >= duration and duration > 1:
+            clamped = duration - 1
+        self._set_timeline_offset(clamped)
+
+        seek_dt = self._capture_start_dt.addSecs(clamped)
+        seek_start_str = seek_dt.toString("yyyy-MM-dd HH:mm:ss")
+        capture_end_str = self._capture_end_dt.toString("yyyy-MM-dd HH:mm:ss")
+        pos_percent = int(round((clamped * 99.0) / float(duration)))
+        pos_percent = max(0, min(99, pos_percent))
+        channel = (
+            self._capture_channel
+            if self._capture_channel is not None
+            else int(self.combo_channel.currentData())
+        )
+        self._start_playback(
+            channel=channel,
+            start_time=seek_start_str,
+            end_time=capture_end_str,
+            recording_name=self._capture_recording_name,
+            playback_position_percent=pos_percent,
+            preserve_timeline=True,
+        )
+
+    @staticmethod
+    def _format_size(size_bytes: int) -> str:
+        if size_bytes >= 1024 * 1024:
+            return f"{size_bytes / (1024 * 1024):.1f} MB"
+        if size_bytes >= 1024:
+            return f"{size_bytes / 1024:.1f} KB"
+        return f"{size_bytes} B"
+
+    def _selected_time_range(self) -> tuple[str, str]:
+        start_dt = self.start_time_edit.dateTime()
+        end_dt = self.end_time_edit.dateTime()
+        if start_dt >= end_dt:
+            raise ValueError("The start time must be earlier than the end time.")
+        return (
+            start_dt.toString("yyyy-MM-dd HH:mm:ss"),
+            end_dt.toString("yyyy-MM-dd HH:mm:ss"),
+        )
+
+    def _on_selected_channel_changed(self):
+        channel = int(self.combo_channel.currentData())
+        if self.player is None:
+            self.playback_tile.channel = channel
+            self.playback_tile.lbl_title.setText(f"CAMERA {channel}")
+
+    def _search_recordings(self):
+        try:
+            start_time, end_time = self._selected_time_range()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid Time Range", str(exc))
+            return
+
+        channel = int(self.combo_channel.currentData())
+        self.btn_search.setEnabled(False)
+        self.lbl_status.setText(f"Searching Camera {channel} recordings…")
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        QApplication.processEvents()
+        try:
+            recordings = list_hikvision_recordings(
+                self.config,
+                channel=channel,
+                start_time=start_time,
+                end_time=end_time,
+            )
+        except HikvisionSDKError as exc:
+            self.lbl_status.setText("Search failed")
+            QMessageBox.critical(self, "Recording Search Failed", str(exc))
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+            self.btn_search.setEnabled(True)
+
+        self.recordings = recordings
+        self.recording_list.clear()
+        for index, recording in enumerate(recordings):
+            kind = recording_file_type_label(recording.file_type)
+            size_text = self._format_size(recording.size_bytes)
+            label = (
+                f"{recording.start_time} → {recording.end_time}\n"
+                f"{kind} • {size_text} • {recording.name}"
+            )
+            item = QListWidgetItem(label)
+            item.setData(Qt.UserRole, index)
+            self.recording_list.addItem(item)
+
+        if recordings:
+            self.recording_list.setCurrentRow(0)
+            self.lbl_results.setText(f"Recorded segments ({len(recordings)}):")
+            self.lbl_status.setText(
+                f"Found {len(recordings)} recording(s) for Camera {channel}."
+            )
+        else:
+            self.lbl_results.setText("Recorded segments (0):")
+            self.lbl_status.setText(
+                f"No recordings found for Camera {channel} in the selected window."
+            )
+
+    def _play_selected_recording(self):
+        item = self.recording_list.currentItem()
+        if item is None:
+            QMessageBox.information(
+                self,
+                "Select a Recording",
+                "Search and select a recorded segment first, or use Play Time Range.",
+            )
+            return
+        index = item.data(Qt.UserRole)
+        if index is None or not (0 <= int(index) < len(self.recordings)):
+            return
+        recording = self.recordings[int(index)]
+        capture_matches = (
+            self._capture_channel == recording.channel
+            and self._capture_recording_name == recording.name
+            and self._capture_start_dt == self._parse_datetime(recording.start_time)
+            and self._capture_end_dt == self._parse_datetime(recording.end_time)
+            and self.timeline_widget.duration_seconds > 0
+        )
+        if capture_matches and self.timeline_widget.offset_seconds > 0:
+            self.seek_to_timeline_offset(self.timeline_widget.offset_seconds)
+            return
+
+        start_dt = self._parse_datetime(recording.start_time)
+        end_dt = self._parse_datetime(recording.end_time)
+        duration = (
+            max(0, int(start_dt.secsTo(end_dt)))
+            if start_dt.isValid() and end_dt.isValid()
+            else 0
+        )
+        segments = [(0, duration, recording.file_type)] if duration > 0 else []
+        self._set_timeline_capture(
+            channel=recording.channel,
+            start_time=recording.start_time,
+            end_time=recording.end_time,
+            recording_name=recording.name,
+            segments=segments,
+            initial_offset_seconds=0,
+        )
+        self._start_playback(
+            channel=recording.channel,
+            start_time=recording.start_time,
+            end_time=recording.end_time,
+            recording_name=recording.name,
+            playback_position_percent=0,
+            preserve_timeline=True,
+        )
+
+    def _play_time_range(self):
+        try:
+            start_time, end_time = self._selected_time_range()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid Time Range", str(exc))
+            return
+        channel = int(self.combo_channel.currentData())
+        start_dt = self._parse_datetime(start_time)
+        end_dt = self._parse_datetime(end_time)
+        segments: list[tuple[int, int, int]] = []
+        if start_dt.isValid() and end_dt.isValid():
+            total_secs = max(0, int(start_dt.secsTo(end_dt)))
+            for rec in self.recordings:
+                if rec.channel != channel:
+                    continue
+                rec_s = self._parse_datetime(rec.start_time)
+                rec_e = self._parse_datetime(rec.end_time)
+                if not rec_s.isValid() or not rec_e.isValid():
+                    continue
+                s_off = max(0, min(total_secs, int(start_dt.secsTo(rec_s))))
+                e_off = max(0, min(total_secs, int(start_dt.secsTo(rec_e))))
+                if e_off > s_off:
+                    segments.append((s_off, e_off, rec.file_type))
+        self._set_timeline_capture(
+            channel=channel,
+            start_time=start_time,
+            end_time=end_time,
+            recording_name="",
+            segments=segments,
+            initial_offset_seconds=0,
+        )
+        self._start_playback(
+            channel=channel,
+            start_time=start_time,
+            end_time=end_time,
+            recording_name="",
+            playback_position_percent=0,
+            preserve_timeline=True,
+        )
+
+    def _start_playback(
+        self,
+        channel: int,
+        start_time: str,
+        end_time: str,
+        recording_name: str,
+        playback_position_percent: int = 0,
+        preserve_timeline: bool = False,
+    ):
+        self.stop_playback()
+        if not preserve_timeline or self.timeline_widget.duration_seconds <= 0:
+            self._set_timeline_capture(
+                channel=channel,
+                start_time=start_time,
+                end_time=end_time,
+                recording_name=recording_name,
+                initial_offset_seconds=0,
+            )
+
+        self.playback_tile.channel = channel
+        self.playback_tile.lbl_title.setText(f"CAMERA {channel} (PLAYBACK)")
+        self.is_paused = False
+        self._playback_started_receiving_frames = False
+        self.btn_pause.setChecked(False)
+        self.btn_pause.setText("Pause")
+        self.btn_pause.setIcon(_make_icon("pause"))
+        self.btn_pause.setEnabled(True)
+        self.btn_stop.setEnabled(True)
+
+        stream_type = int(self.combo_stream.currentData())
+        player = HikvisionPlaybackPlayer(
+            channel=channel,
+            config=self.config,
+            start_time=start_time,
+            end_time=end_time,
+            recording_name=recording_name,
+            stream_type=stream_type,
+            playback_position_percent=playback_position_percent,
+            parent=self,
+        )
+        player.frame_ready.connect(self._on_playback_frame)
+        player.status_changed.connect(self._on_playback_status)
+        player.fps_updated.connect(self._on_playback_fps)
+        player.progress_updated.connect(self._on_playback_progress)
+        player.osd_time_updated.connect(self._on_playback_osd_time)
+        player.playback_finished.connect(self._on_playback_finished)
+        self.player = player
+        target_label = recording_name or f"{start_time} → {end_time}"
+        if playback_position_percent > 0:
+            self.lbl_status.setText(
+                f"Playing {target_label} from {start_time} ({playback_position_percent}%)"
+            )
+        else:
+            self.lbl_status.setText(f"Starting playback: {target_label}")
+        player.start()
+        self.playback_clock_timer.start()
+
+    @Slot(int, QImage)
+    def _on_playback_frame(self, _channel: int, image: QImage):
+        self._playback_started_receiving_frames = True
+        self.playback_tile.update_frame(image)
+
+    @Slot(int, str, bool)
+    def _on_playback_status(self, _channel: int, status_text: str, is_online: bool):
+        self.playback_tile.update_status(status_text, is_online)
+
+    @Slot(int, float)
+    def _on_playback_fps(self, _channel: int, fps: float):
+        self.playback_tile.update_fps(fps)
+
+    @Slot(int, int)
+    def _on_playback_progress(self, channel: int, progress: int):
+        current_ts = self.timeline_widget.current_timestamp()
+        if current_ts.isValid():
+            self.lbl_status.setText(
+                f"Camera {channel} playback: {current_ts.toString('HH:mm:ss')} ({progress}%)"
+            )
+        else:
+            self.lbl_status.setText(f"Camera {channel} playback: {progress}%")
+
+    @Slot(int, str)
+    def _on_playback_osd_time(self, channel: int, osd_time: str):
+        osd_dt = self._parse_datetime(osd_time)
+        duration = self.timeline_widget.duration_seconds
+        if (
+            osd_dt.isValid()
+            and self._capture_start_dt.isValid()
+            and duration > 0
+            and not self.timeline_widget.is_dragging
+            and not self.timeline_slider.isSliderDown()
+        ):
+            offset = int(self._capture_start_dt.secsTo(osd_dt))
+            if 0 <= offset <= duration:
+                self._set_timeline_offset(offset)
+                pct = int(round((offset * 100.0) / float(duration)))
+                self.lbl_status.setText(
+                    f"Camera {channel} playback: {osd_dt.toString('HH:mm:ss')} ({pct}%)"
+                )
+
+    def _advance_playback_clock(self):
+        if (
+            self.player is None
+            or self.is_paused
+            or not self._playback_started_receiving_frames
+            or self.timeline_widget.is_dragging
+            or self.timeline_slider.isSliderDown()
+        ):
+            return
+        duration = self.timeline_widget.duration_seconds
+        if duration <= 0:
+            return
+        next_offset = min(duration, self.timeline_widget.offset_seconds + 1)
+        self._set_timeline_offset(next_offset)
+
+    @Slot(int, bool, str)
+    def _on_playback_finished(self, _channel: int, success: bool, message: str):
+        self.playback_clock_timer.stop()
+        self._playback_started_receiving_frames = False
+        self.btn_pause.setEnabled(False)
+        self.btn_stop.setEnabled(False)
+        self.lbl_status.setText(message)
+        if not success:
+            QMessageBox.warning(self, "Playback Error", message)
+
+    def _toggle_pause(self):
+        if self.player is None:
+            return
+        self.is_paused = self.btn_pause.isChecked()
+        self.player.set_paused(self.is_paused)
+        self.btn_pause.setText("Resume" if self.is_paused else "Pause")
+        self.btn_pause.setIcon(
+            _make_icon("play" if self.is_paused else "pause")
+        )
+
+    def _save_playback_snapshot(self, channel: int):
+        image = self.playback_tile.last_image
+        if image is None or image.isNull():
+            QMessageBox.information(
+                self, "Snapshot", "No playback frame available yet."
+            )
+            return
+        self.artifact_directory.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        res_tag = f"{image.width()}x{image.height()}"
+        output = (
+            self.artifact_directory
+            / f"cam{channel}_playback_{timestamp}_{res_tag}.jpg"
+        )
+        image.save(str(output), "JPG", 100)
+        self.lbl_status.setText(f"Saved playback snapshot: {output.name}")
+
+    def stop_playback(self):
+        self.playback_clock_timer.stop()
+        self._playback_started_receiving_frames = False
+        if self.player is not None:
+            player = self.player
+            self.player = None
+            try:
+                player.playback_finished.disconnect(self._on_playback_finished)
+            except (RuntimeError, TypeError):
+                pass
+            player.stop()
+        self.btn_pause.setEnabled(False)
+        self.btn_stop.setEnabled(False)
+
+    def closeEvent(self, event):
+        self.stop_playback()
+        super().closeEvent(event)
+
+    def reject(self):
+        self.stop_playback()
+        super().reject()
+
+
 # ==============================================================================
 # Main Application Window
 # ==============================================================================
@@ -1661,6 +2632,15 @@ class MainWindow(QMainWindow):
         self.btn_record.setToolTip("Record one camera to an MP4 video")
         self.btn_record.clicked.connect(self._toggle_recording)
         toolbar.addWidget(self.btn_record)
+
+        self.btn_recordings = QPushButton("Recordings")
+        self.btn_recordings.setIcon(_make_icon("playback"))
+        self.btn_recordings.setIconSize(QSize(16, 16))
+        self.btn_recordings.setToolTip(
+            "Browse and watch previous DVR recordings via Hikvision SDK (Key: P)"
+        )
+        self.btn_recordings.clicked.connect(self._open_recordings_dialog)
+        toolbar.addWidget(self.btn_recordings)
 
         # HQ RTSP Player button
         self.btn_rtsp = QPushButton("Open HQ RTSP")
@@ -2337,6 +3317,20 @@ class MainWindow(QMainWindow):
         except Exception as ex:
             QMessageBox.warning(self, "RTSP Error", f"Failed to launch ffplay:\n{ex}")
 
+    def _open_recordings_dialog(self):
+        default_channel = (
+            self.selected_channels[0]
+            if self.active_mode == "ALL"
+            else int(self.active_mode)
+        )
+        dialog = RecordingsDialog(
+            self.config,
+            self.snapshot_dir,
+            default_channel=default_channel,
+            parent=self,
+        )
+        dialog.exec()
+
     def _open_settings(self):
         dialog = SettingsDialog(self.config, self.snapshot_dir, self)
         if dialog.exec() == QDialog.Accepted:
@@ -2389,6 +3383,8 @@ class MainWindow(QMainWindow):
             self._take_snapshot()
         elif key == Qt.Key_R:
             self._toggle_recording()
+        elif key == Qt.Key_P:
+            self._open_recordings_dialog()
         elif key == Qt.Key_Space:
             self.btn_pause.click()
         elif key in (Qt.Key_F, Qt.Key_F11):
