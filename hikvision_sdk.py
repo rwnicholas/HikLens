@@ -123,8 +123,8 @@ def _candidate_helpers(root: Path):
     configured_helper = os.environ.get("HIKVISION_HELPER_PATH", "").strip()
     if configured_helper:
         yield Path(configured_helper).expanduser()
-    yield root / "app" / "hikvision_stream_helper"
     yield Path.home() / ".local/lib/hikvision-camera-viewer/hikvision_stream_helper"
+    yield root / "app" / "hikvision_stream_helper"
 
 
 def discover_hikvision_sdk(
@@ -192,7 +192,7 @@ def discover_hikvision_sdk(
         )
         raise HikvisionSDKError(
             "Hikvision stream helper is not built. Build it with: "
-            f'make -C poc/hikvision-sdk helper SDK_ROOT="{root}". '
+            f'make -C hikvision-sdk helper SDK_ROOT="{root}". '
             f"Searched: {searched_helpers}"
         )
     _check_elf_architecture(helper, host)

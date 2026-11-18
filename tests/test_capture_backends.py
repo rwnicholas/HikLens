@@ -1,6 +1,6 @@
 import unittest
 
-from capture_backends import create_capture_backend
+from capture_backends import create_capture_backend, supports_selectable_fps
 
 
 class FakeBackend:
@@ -51,6 +51,11 @@ class CaptureBackendTests(unittest.TestCase):
     def test_rejects_unknown_backend_instead_of_falling_back(self):
         with self.assertRaisesRegex(ValueError, "Unknown capture backend: UNKNOWN"):
             self.create("UNKNOWN")
+
+    def test_selectable_fps_is_available_for_rtsp_and_hikvision_only(self):
+        self.assertTrue(supports_selectable_fps("RTSP"))
+        self.assertTrue(supports_selectable_fps("HIKVISION"))
+        self.assertFalse(supports_selectable_fps("HTTP"))
 
 
 if __name__ == "__main__":

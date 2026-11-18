@@ -1,4 +1,6 @@
 import importlib
+import io
+import os
 import sys
 import threading
 import types
@@ -8,7 +10,7 @@ from unittest.mock import patch
 
 def _install_qt_test_stubs():
     if "PySide6.QtCore" in sys.modules:
-        return
+        return False
 
     class Signal:
         def __init__(self, *types):
@@ -27,9 +29,15 @@ def _install_qt_test_stubs():
     class _BoundSignal:
         def __init__(self):
             self.events = []
+            self.slots = []
 
         def emit(self, *args):
             self.events.append(args)
+            for slot in self.slots:
+                slot(*args)
+
+        def connect(self, slot):
+            self.slots.append(slot)
 
     class QThread(threading.Thread):
         def __init__(self, parent=None):
@@ -67,13 +75,42 @@ def _install_qt_test_stubs():
     sys.modules["PySide6"] = pyside
     sys.modules["PySide6.QtCore"] = core
     sys.modules["PySide6.QtGui"] = gui
+    return True
 
 
-_install_qt_test_stubs()
+USING_QT_STUBS = _install_qt_test_stubs()
+if not USING_QT_STUBS:
+    from PySide6.QtCore import QCoreApplication
+
 hikvision_backend = importlib.import_module("hikvision_backend")
 
 
+class SignalEvents:
+    def __init__(self, worker):
+        self.events = {}
+        for name in (
+            "frame_ready",
+            "status_changed",
+            "fps_updated",
+            "log_event",
+            "diagnostics_updated",
+        ):
+            events = []
+            getattr(worker, name).connect(
+                lambda *args, target=events: target.append(args)
+            )
+            self.events[name] = events
+
+    def __getattr__(self, name):
+        return self.events[name]
+
+
 class HikvisionBackendTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if not USING_QT_STUBS:
+            cls.application = QCoreApplication.instance() or QCoreApplication([])
+
     def make_worker(self):
         from types import SimpleNamespace
 
@@ -82,9 +119,20 @@ class HikvisionBackendTests(unittest.TestCase):
             sdk_port=8000,
             username="user",
             password="secret",
+            stream_verification_code="stream-code",
             sdk_directory="/missing/sdk",
         )
-        return hikvision_backend.HikvisionCameraPlayer(1, config)
+        worker = hikvision_backend.HikvisionCameraPlayer(1, config)
+        worker.test_events = SignalEvents(worker)
+        return worker
+
+    @staticmethod
+    def wait_for_worker(worker, timeout=2):
+        if USING_QT_STUBS:
+            worker.join(timeout=timeout)
+        else:
+            worker.wait(int(timeout * 1000))
+            QCoreApplication.instance().processEvents()
 
     def test_missing_sdk_is_reported_without_backend_fallback(self):
         worker = self.make_worker()
@@ -99,27 +147,71 @@ class HikvisionBackendTests(unittest.TestCase):
 
             worker._stop_event.wait = stop_wait
             worker.start()
-            worker.join(timeout=2)
+            self.wait_for_worker(worker)
 
-        self.assertFalse(worker.is_alive())
+        self.assertFalse(worker.isRunning())
         self.assertEqual(
-            worker.status_changed.events[-1],
+            worker.test_events.status_changed[-1],
             (1, "Hikvision SDK unavailable", False),
         )
-        self.assertEqual(worker.log_event.events[-1][1:], ("error", "SDK missing"))
+        self.assertEqual(
+            worker.test_events.log_event[-1][1:],
+            ("error", "SDK missing"),
+        )
 
     def test_inactive_channel_does_not_initialize_the_sdk(self):
         worker = self.make_worker()
         worker.set_active(False)
         with patch.object(hikvision_backend, "discover_hikvision_sdk") as discover:
             worker.start()
+            if not USING_QT_STUBS:
+                import time
+
+                time.sleep(0.05)
             worker.stop()
+            if not USING_QT_STUBS:
+                QCoreApplication.instance().processEvents()
 
         discover.assert_not_called()
         self.assertEqual(
-            worker.status_changed.events[-1],
+            worker.test_events.status_changed[-1],
             (1, "Inactive", False),
         )
+
+    def test_selected_fps_caps_sdk_frames_in_the_shared_pipeline(self):
+        worker = self.make_worker()
+        worker.set_target_fps(5)
+        with patch.object(
+            hikvision_backend.time,
+            "monotonic",
+            side_effect=(1.0, 1.05, 1.21),
+        ):
+            worker._emit_frame(b"\0" * 4, 1, 1)
+            worker._emit_frame(b"\0" * 4, 1, 1)
+            worker._emit_frame(b"\0" * 4, 1, 1)
+
+        self.assertEqual(len(worker.test_events.frame_ready), 2)
+
+    def test_quality_and_focus_select_main_or_substream(self):
+        worker = self.make_worker()
+        self.assertEqual(worker._stream_type(), 1)
+
+        worker.set_focused(True)
+        self.assertEqual(worker._stream_type(), 0)
+
+        worker.set_resolution_mode("standard")
+        self.assertEqual(worker._stream_type(), 1)
+
+        worker.set_resolution_mode("max")
+        self.assertEqual(worker._stream_type(), 0)
+
+    def test_quality_change_requests_preview_restart(self):
+        worker = self.make_worker()
+        with patch.object(worker, "_terminate_process") as terminate:
+            worker.set_resolution_mode("max")
+
+        self.assertTrue(worker._configuration_changed.is_set())
+        terminate.assert_called_once()
 
     def test_no_decoded_frames_is_an_error_not_an_online_black_frame(self):
         worker = self.make_worker()
@@ -145,11 +237,14 @@ class HikvisionBackendTests(unittest.TestCase):
             worker.run()
 
         self.assertEqual(
-            worker.status_changed.events[-1],
+            worker.test_events.status_changed[-1],
             (1, "Hikvision decode error", False),
         )
-        self.assertFalse(worker.frame_ready.events)
-        self.assertIn("encrypted video could not be decoded", worker.log_event.events[-1][2])
+        self.assertFalse(worker.test_events.frame_ready)
+        self.assertIn(
+            "encrypted video could not be decoded",
+            worker.test_events.log_event[-1][2],
+        )
 
     def test_diagnostics_are_emitted_and_logged_as_structured_fields(self):
         worker = self.make_worker()
@@ -166,33 +261,81 @@ class HikvisionBackendTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(worker.diagnostics_updated.events[-1][0], 1)
-        diagnostic = worker.diagnostics_updated.events[-1][1]
+        self.assertEqual(worker.test_events.diagnostics_updated[-1][0], 1)
+        diagnostic = worker.test_events.diagnostics_updated[-1][1]
         self.assertEqual(diagnostic["stream_bytes"], 2048)
         self.assertEqual(diagnostic["encryption_type"], 2)
         self.assertTrue(
             any(
                 "AES key retrieval: failed" in event[2]
-                for event in worker.log_event.events
+                for event in worker.test_events.log_event
             )
         )
         self.assertTrue(
             any(
                 "No decoded frames received" in event[2]
-                for event in worker.log_event.events
+                for event in worker.test_events.log_event
             )
+        )
+        diagnostic = worker.test_events.diagnostics_updated[-1][1]
+        self.assertTrue(diagnostic["stream_verification_code_configured"])
+        self.assertFalse(diagnostic["stream_verification_code_applied"])
+        self.assertTrue(
+            any(
+                "not accepted" in event[2]
+                for event in worker.test_events.log_event
+            )
+        )
+
+    def test_verification_code_is_forwarded_to_the_playctrl_helper(self):
+        worker = self.make_worker()
+        process = types.SimpleNamespace(
+            stderr=io.BytesIO(),
+            poll=lambda: 0,
+            wait=lambda timeout=None: 0,
+        )
+        installation = types.SimpleNamespace(stream_helper="/external/helper")
+        with patch.dict(
+            os.environ,
+            {"HIKVISION_STREAM_VERIFICATION_CODE": "never-forward-this"},
+        ), patch.object(
+            hikvision_backend.subprocess, "Popen", return_value=process
+        ) as popen:
+            worker._run_helper(installation)
+
+        child_environment = popen.call_args.kwargs["env"]
+        self.assertEqual(
+            child_environment["HIKVISION_STREAM_VERIFICATION_CODE"],
+            "stream-code",
+        )
+        self.assertNotIn("never-forward-this", child_environment.values())
+
+    def test_helper_success_is_required_before_code_is_reported_as_applied(self):
+        worker = self.make_worker()
+        worker._apply_diagnostics(
+            {
+                "stream_verification_code_applied": True,
+                "decoder_key_configuration": "ok",
+            }
+        )
+
+        diagnostic = worker.test_events.diagnostics_updated[-1][1]
+        self.assertTrue(diagnostic["stream_verification_code_configured"])
+        self.assertTrue(diagnostic["stream_verification_code_applied"])
+        self.assertFalse(
+            any("not accepted" in event[2] for event in worker.test_events.log_event)
         )
 
     def test_decoded_frames_use_the_shared_qimage_signal(self):
         worker = self.make_worker()
         worker._emit_frame(bytes(2 * 2 * 4), 2, 2)
 
-        self.assertEqual(len(worker.frame_ready.events), 1)
-        channel, image = worker.frame_ready.events[0]
+        self.assertEqual(len(worker.test_events.frame_ready), 1)
+        channel, image = worker.test_events.frame_ready[0]
         self.assertEqual(channel, 1)
         self.assertFalse(image.isNull())
         self.assertEqual(
-            worker.status_changed.events[-1],
+            worker.test_events.status_changed[-1],
             (1, "Online (Hikvision SDK)", True),
         )
 

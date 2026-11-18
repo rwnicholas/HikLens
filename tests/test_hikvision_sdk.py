@@ -54,11 +54,37 @@ class HikvisionSDKDiscoveryTests(unittest.TestCase):
             with patch.dict(
                 os.environ,
                 {"HIKVISION_HELPER_PATH": "", "HIKVISION_SDK_DIR": ""},
+            ), patch.object(
+                hikvision_sdk.Path, "home", return_value=Path(directory)
             ), patch.object(hikvision_sdk, "_verify_helper") as verify:
                 installation = discover_hikvision_sdk(root)
             self.assertEqual(installation.root, root.resolve())
             self.assertEqual(installation.stream_helper, helper.resolve())
             verify.assert_called_once_with(helper.resolve())
+
+    def test_prefers_the_helper_installed_by_the_documented_make_target(self):
+        host = hikvision_sdk._ELF_HOSTS[platform.machine().lower()]
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            root = home / "sdk"
+            _sdk_fixture(root, host)
+            local_helper = (
+                home / ".local/lib/hikvision-camera-viewer/hikvision_stream_helper"
+            )
+            _write_elf(local_helper, host)
+            local_helper.chmod(0o755)
+            with patch.dict(
+                os.environ,
+                {
+                    "HIKVISION_HELPER_PATH": "",
+                    "HIKVISION_SDK_DIR": "",
+                },
+            ), patch.object(hikvision_sdk.Path, "home", return_value=home), patch.object(
+                hikvision_sdk, "_verify_helper"
+            ) as verify:
+                installation = discover_hikvision_sdk(root)
+            self.assertEqual(installation.stream_helper, local_helper.resolve())
+            verify.assert_called_once_with(local_helper.resolve())
 
     def test_rejects_mismatched_library_architecture(self):
         host = hikvision_sdk._ELF_HOSTS[platform.machine().lower()]

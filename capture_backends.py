@@ -5,6 +5,11 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 
+def supports_selectable_fps(backend_mode: str) -> bool:
+    """Whether a backend supports the viewer's selectable output frame rate."""
+    return backend_mode in {"RTSP", "HIKVISION"}
+
+
 class CaptureBackend(Protocol):
     """Worker interface consumed by the camera UI and frame pipeline."""
 

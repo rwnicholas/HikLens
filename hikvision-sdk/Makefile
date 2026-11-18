@@ -1,5 +1,5 @@
 SDK_ROOT ?= $(HOME)/Downloads/EN-HCNetSDKV6.1.11.40_build20260922_linux64
-BUILD_DIR ?= /tmp/hikvision-sdk-poc-build
+BUILD_DIR ?= /tmp/hikvision-sdk-build
 CXX ?= c++
 
 SDK_LIB := $(SDK_ROOT)/lib

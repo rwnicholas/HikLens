@@ -16,6 +16,7 @@
 #include <string_view>
 #include <thread>
 #include <unistd.h>
+#include <vector>
 
 namespace {
 
@@ -27,10 +28,12 @@ void handle_signal(int) {
 }
 
 struct TestState {
-    std::array<char, 16> key{};
+    std::array<char, NET_SDK_MAX_VERIFICATION_CODE_LEN + 1>
+        stream_verification_code{};
     int player_key_length{128};
     int frame_output_fd{-1};
     int target_fps{10};
+    int stream_type{0};
     std::mutex frame_output_mutex;
     std::chrono::steady_clock::time_point last_output_time{};
     std::atomic<int> player_port{-1};
@@ -43,6 +46,8 @@ struct TestState {
     std::atomic<int> preview_status{0};
     std::atomic<int> playctrl_status{0};
     std::atomic<int> decoder_key_status{0};
+    std::atomic<bool> stream_verification_code_configured{false};
+    std::atomic<bool> stream_verification_code_applied{false};
     std::atomic<unsigned int> sdk_error_code{0};
     std::atomic<int> decoder_error_code{0};
     std::atomic<std::uint64_t> decoded_frames{0};
@@ -52,6 +57,9 @@ struct TestState {
     std::atomic<std::uint64_t> input_failures{0};
     std::atomic<int> width{0};
     std::atomic<int> height{0};
+    std::atomic<int> decoded_frame_type{-1};
+    std::atomic<int> decoded_frame_bytes{0};
+    std::atomic<std::uint64_t> frames_sent{0};
     std::atomic<bool> encrypt_info_seen{false};
     std::atomic<long> video_encrypt_type{-1};
     std::atomic<long> audio_encrypt_type{-1};
@@ -92,6 +100,10 @@ const char* decoder_error_name(int error) {
             return "Could not write a decoded frame to the application";
         case 12:
             return "PlayM4_SetDecodeFrameType failed";
+        case 13:
+            return "Streaming Verification Code is required";
+        case 14:
+            return "Streaming Verification Code exceeds the SDK limit";
         default:
             return "";
     }
@@ -111,7 +123,8 @@ void emit_diagnostics(const TestState& state, bool helper_mode) {
               << status_name(state.sdk_key_status.load())
               << "\",\"preview\":\""
               << status_name(state.preview_status.load())
-              << "\",\"encryption_type\":"
+              << "\",\"stream_type\":" << state.stream_type
+              << ",\"encryption_type\":"
               << state.video_encrypt_type.load()
               << ",\"playctrl_initialization\":\""
               << status_name(state.playctrl_status.load())
@@ -121,10 +134,22 @@ void emit_diagnostics(const TestState& state, bool helper_mode) {
               << status_name(state.decoder_key_status.load())
               << "\",\"decoder_key_set\":"
               << state.decoder_key_set.load()
+              << ",\"stream_verification_code_configured\":"
+              << (state.stream_verification_code_configured.load()
+                      ? "true"
+                      : "false")
+              << ",\"stream_verification_code_applied\":"
+              << (state.stream_verification_code_applied.load() ? "true"
+                                                                 : "false")
               << ",\"frames_decoded\":" << state.decoded_frames.load()
+              << ",\"frames_sent\":" << state.frames_sent.load()
               << ",\"input_failures\":" << state.input_failures.load()
               << ",\"frame_width\":" << state.width.load()
               << ",\"frame_height\":" << state.height.load()
+              << ",\"decoded_frame_type\":"
+              << state.decoded_frame_type.load()
+              << ",\"decoded_frame_bytes\":"
+              << state.decoded_frame_bytes.load()
               << ",\"sdk_error_code\":" << state.sdk_error_code.load()
               << ",\"playctrl_error_code\":"
               << state.player_error_code.load()
@@ -159,6 +184,16 @@ bool copy_field(char (&destination)[N], const std::string& value) {
         return false;
     }
     std::memcpy(destination, value.data(), value.size());
+    destination[value.size()] = '\0';
+    return true;
+}
+
+template <std::size_t N>
+bool copy_field(std::array<char, N>& destination, const std::string& value) {
+    if (value.empty() || value.size() >= N) {
+        return false;
+    }
+    std::memcpy(destination.data(), value.data(), value.size());
     destination[value.size()] = '\0';
     return true;
 }
@@ -271,6 +306,58 @@ bool write_all(int fd, const void* data, std::size_t size) {
     return true;
 }
 
+bool convert_yv12_to_rgb32(const char* source, int width, int height,
+                           int source_size, std::vector<char>& destination) {
+    if (source == nullptr || width < 2 || height < 2 ||
+        width % 2 != 0 || height % 2 != 0) {
+        return false;
+    }
+
+    const std::size_t pixel_count =
+        static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+    const std::size_t chroma_size = pixel_count / 4;
+    if (pixel_count + chroma_size * 2 !=
+        static_cast<std::size_t>(source_size)) {
+        return false;
+    }
+
+    try {
+        destination.resize(pixel_count * 4);
+    } catch (const std::bad_alloc&) {
+        return false;
+    }
+
+    const auto clamp = [](int value) {
+        return std::clamp(value, 0, 255);
+    };
+    const auto* y_plane = reinterpret_cast<const unsigned char*>(source);
+    const auto* v_plane = y_plane + pixel_count;
+    const auto* u_plane = v_plane + chroma_size;
+    auto* rgb = reinterpret_cast<unsigned char*>(destination.data());
+
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const std::size_t pixel =
+                static_cast<std::size_t>(y) * width + x;
+            const std::size_t chroma =
+                static_cast<std::size_t>(y / 2) * (width / 2) + x / 2;
+            const int luminance = std::max(0, static_cast<int>(y_plane[pixel]) - 16);
+            const int v = static_cast<int>(v_plane[chroma]) - 128;
+            const int u = static_cast<int>(u_plane[chroma]) - 128;
+            const int red = clamp((298 * luminance + 409 * v + 128) >> 8);
+            const int green =
+                clamp((298 * luminance - 100 * u - 208 * v + 128) >> 8);
+            const int blue = clamp((298 * luminance + 516 * u + 128) >> 8);
+            const std::size_t output = pixel * 4;
+            rgb[output] = static_cast<unsigned char>(blue);
+            rgb[output + 1] = static_cast<unsigned char>(green);
+            rgb[output + 2] = static_cast<unsigned char>(red);
+            rgb[output + 3] = 0xff;
+        }
+    }
+    return true;
+}
+
 void CALLBACK decoded_frame_callback(int, char* buffer, int size,
                                      FRAME_INFO* frame_info,
                                      void* user, int) {
@@ -281,14 +368,26 @@ void CALLBACK decoded_frame_callback(int, char* buffer, int size,
     auto* state = static_cast<TestState*>(user);
     state->width.store(frame_info->nWidth);
     state->height.store(frame_info->nHeight);
+    state->decoded_frame_type.store(frame_info->nType);
+    state->decoded_frame_bytes.store(size);
     state->decoded_frames.fetch_add(1);
 
     if (state->frame_output_fd >= 0) {
-        const std::uint64_t expected_size =
+        const std::uint64_t pixel_count =
             static_cast<std::uint64_t>(frame_info->nWidth) *
-            static_cast<std::uint64_t>(frame_info->nHeight) * 4U;
-        if (frame_info->nType != T_RGB32 || expected_size !=
-                                               static_cast<std::uint64_t>(size)) {
+            static_cast<std::uint64_t>(frame_info->nHeight);
+        const std::uint64_t rgb_size = pixel_count * 4U;
+        std::vector<char> converted;
+        const char* output = buffer;
+        if (frame_info->nType == T_YV12) {
+            if (!convert_yv12_to_rgb32(buffer, frame_info->nWidth,
+                                       frame_info->nHeight, size, converted)) {
+                state->decoder_error_code.store(10);
+                return;
+            }
+            output = converted.data();
+        } else if (frame_info->nType != T_RGB32 ||
+                   rgb_size != static_cast<std::uint64_t>(size)) {
             state->decoder_error_code.store(10);
             return;
         }
@@ -311,13 +410,14 @@ void CALLBACK decoded_frame_callback(int, char* buffer, int size,
         const FrameHeader header{{'H', 'I', 'K', 'F'},
                                  static_cast<std::uint32_t>(frame_info->nWidth),
                                  static_cast<std::uint32_t>(frame_info->nHeight),
-                                 static_cast<std::uint32_t>(size)};
+                                 static_cast<std::uint32_t>(rgb_size)};
         if (!write_all(state->frame_output_fd, &header, sizeof(header)) ||
-            !write_all(state->frame_output_fd, buffer,
-                       static_cast<std::size_t>(size))) {
+            !write_all(state->frame_output_fd, output,
+                       static_cast<std::size_t>(rgb_size))) {
             state->decoder_error_code.store(11);
             return;
         }
+        state->frames_sent.fetch_add(1);
     }
 }
 
@@ -345,13 +445,14 @@ void CALLBACK stream_callback(LONG, DWORD data_type, BYTE* buffer,
             return;
         }
         if (!PlayM4_SetSecretKey(port, ENCRYPT_AES_10R_VIDEO,
-                                 state->key.data(),
+                                 state->stream_verification_code.data(),
                                  state->player_key_length)) {
             set_player_error(state, 3, port);
             PlayM4_FreePort(port);
             return;
         }
         state->decoder_key_status.store(1);
+        state->stream_verification_code_applied.store(true);
         if (!PlayM4_SetEncryptTypeCallBack(
                 port, 1, encrypt_type_callback, state)) {
             set_player_error(state, 4, port);
@@ -441,6 +542,7 @@ int main(int argc, char** argv) {
     long run_seconds = helper_mode ? 0 : 15;
     long player_key_length = 128;
     long target_fps = 10;
+    long stream_type = 0;
     long play_window = 0;
     long frame_fd = -1;
     if (username.empty() || password.empty()) {
@@ -455,6 +557,7 @@ int main(int argc, char** argv) {
                        player_key_length) ||
         (player_key_length != 16 && player_key_length != 128) ||
         !parse_integer("HIKVISION_TARGET_FPS", 1, 30, 10, target_fps) ||
+        !parse_integer("HIKVISION_STREAM_TYPE", 0, 1, 0, stream_type) ||
         !parse_integer("HIKVISION_PLAYM4_WINDOW", 0, 0xffffffffL, 0,
                        play_window) ||
         (helper_mode &&
@@ -468,7 +571,27 @@ int main(int argc, char** argv) {
     TestState state;
     state.frame_output_fd = static_cast<int>(frame_fd);
     state.target_fps = static_cast<int>(target_fps);
+    state.stream_type = static_cast<int>(stream_type);
     state.play_window = static_cast<PLAYM4_HWND>(play_window);
+    const std::string stream_verification_code =
+        env_or("HIKVISION_STREAM_VERIFICATION_CODE");
+    state.stream_verification_code_configured.store(
+        !stream_verification_code.empty());
+    if (stream_verification_code.empty()) {
+        state.decoder_error_code.store(13);
+        emit_diagnostics(state, helper_mode);
+        std::cerr << "Set HIKVISION_STREAM_VERIFICATION_CODE to the "
+                     "Platform Access stream encryption code\n";
+        return 2;
+    }
+    if (!copy_field(state.stream_verification_code,
+                    stream_verification_code)) {
+        state.decoder_error_code.store(14);
+        emit_diagnostics(state, helper_mode);
+        std::cerr << "HIKVISION_STREAM_VERIFICATION_CODE exceeds "
+                     "NET_SDK_MAX_VERIFICATION_CODE_LEN bytes\n";
+        return 2;
+    }
 
     NET_DVR_SetLogToFile(0, nullptr, TRUE);
     if (!NET_DVR_Init()) {
@@ -537,13 +660,12 @@ int main(int argc, char** argv) {
     emit_diagnostics(state, helper_mode);
     std::cout << "SDK decryption key configured from " << key_source << '\n';
 
-    state.key = key;
     state.player_key_length = static_cast<int>(player_key_length);
     state.target_fps = static_cast<int>(target_fps);
     NET_DVR_PREVIEWINFO preview_info{};
     preview_info.hPlayWnd = 0;
     preview_info.lChannel = static_cast<LONG>(channel);
-    preview_info.dwStreamType = 0;
+    preview_info.dwStreamType = static_cast<DWORD>(stream_type);
     preview_info.dwLinkMode = 0;
     preview_info.bBlocked = FALSE;
     preview_info.byProtoType = 0;
@@ -564,7 +686,8 @@ int main(int argc, char** argv) {
     state.preview_status.store(1);
     emit_diagnostics(state, helper_mode);
     std::cout << "preview=started channel=" << channel
-              << " stream=main duration_seconds=" << run_seconds << '\n';
+              << " stream=" << (stream_type == 0 ? "main" : "sub")
+              << " duration_seconds=" << run_seconds << '\n';
     const auto start_time = std::chrono::steady_clock::now();
     auto last_diagnostics_time = start_time;
     if (helper_mode) {

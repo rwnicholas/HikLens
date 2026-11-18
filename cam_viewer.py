@@ -43,7 +43,11 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtSvg import QSvgRenderer
 
-from capture_backends import CaptureBackend, create_capture_backend
+from capture_backends import (
+    CaptureBackend,
+    create_capture_backend,
+    supports_selectable_fps,
+)
 from hikvision_backend import HikvisionCameraPlayer
 
 
@@ -114,6 +118,9 @@ class DVRConfig:
     rtsp_port: int = 554
     username: str = os.getenv("DVR_USERNAME", "")
     password: str = os.getenv("DVR_PASSWORD", "")
+    stream_verification_code: str = os.getenv(
+        "HIKVISION_STREAM_VERIFICATION_CODE", ""
+    )
     channels: list = None
     sdk_port: int = 8000
     sdk_directory: str = os.getenv("HIKVISION_SDK_DIR", "")
@@ -177,6 +184,13 @@ def load_dvr_config(settings: QtCore.QSettings) -> DVRConfig:
     ip = str(settings.value("dvr/ip", defaults.ip) or "").strip()
     username = str(settings.value("dvr/username", defaults.username) or "").strip()
     password = str(settings.value("dvr/password", defaults.password) or "")
+    stream_verification_code = str(
+        settings.value(
+            "dvr/stream_verification_code",
+            defaults.stream_verification_code,
+        )
+        or ""
+    )
 
     def read_port(key: str, default: int) -> int:
         try:
@@ -208,6 +222,7 @@ def load_dvr_config(settings: QtCore.QSettings) -> DVRConfig:
         sdk_port=read_port("dvr/sdk_port", defaults.sdk_port),
         username=username,
         password=password,
+        stream_verification_code=stream_verification_code,
         channels=channels,
         sdk_directory=str(
             settings.value("dvr/sdk_directory", defaults.sdk_directory) or ""
@@ -230,6 +245,10 @@ def save_dvr_config(settings: QtCore.QSettings, config: DVRConfig):
     settings.setValue("dvr/sdk_directory", config.sdk_directory)
     settings.setValue("dvr/username", config.username)
     settings.setValue("dvr/password", config.password)
+    settings.setValue(
+        "dvr/stream_verification_code",
+        config.stream_verification_code,
+    )
     settings.setValue("dvr/channels", ",".join(map(str, config.channels)))
     settings.sync()
 
@@ -295,7 +314,7 @@ def load_viewer_state(
     if state.backend_mode not in {"HTTP", "RTSP", "HIKVISION"}:
         raise ValueError("Saved video engine is not supported.")
     if state.fps not in {5, 10, 15, 30}:
-        raise ValueError("Saved RTSP speed is invalid.")
+        raise ValueError("Saved frame-rate selection is invalid.")
     if state.quality_mode not in {"auto", "max", "standard"}:
         raise ValueError("Saved quality mode is invalid.")
     if state.active_mode != "ALL" and state.active_mode not in {
@@ -1204,6 +1223,15 @@ class SettingsDialog(QDialog):
         self.edit_user = QLineEdit(config.username)
         self.edit_pass = QLineEdit(config.password)
         self.edit_pass.setEchoMode(QLineEdit.Password)
+        self.edit_stream_verification_code = QLineEdit(
+            config.stream_verification_code
+        )
+        self.edit_stream_verification_code.setEchoMode(QLineEdit.Password)
+        self.edit_stream_verification_code.setToolTip(
+            "This is distinct from the DVR account password. The current "
+            "Hikvision helper passes it to PlayCtrl for encrypted-stream "
+            "decoding; decoded frames still need to be verified."
+        )
         self.edit_channels = QLineEdit(", ".join(map(str, config.channels)))
         self.edit_sdk_directory = QLineEdit(config.sdk_directory)
         self.edit_sdk_directory.setPlaceholderText(
@@ -1233,6 +1261,10 @@ class SettingsDialog(QDialog):
         form.addRow("Hikvision SDK Port:", self.edit_sdk_port)
         form.addRow("Username:", self.edit_user)
         form.addRow("Password:", self.edit_pass)
+        form.addRow(
+            "Streaming Verification Code:",
+            self.edit_stream_verification_code,
+        )
         form.addRow("Monitored Channels:", self.edit_channels)
         form.addRow("Hikvision SDK Directory:", sdk_directory_row)
         form.addRow("Save snapshots and recordings to:", artifact_directory_row)
@@ -1240,7 +1272,10 @@ class SettingsDialog(QDialog):
         layout.addLayout(form)
 
         storage_note = QLabel(
-            "Settings are saved locally for this user. The password is not encrypted. "
+            "Settings are saved locally for this user. The DVR password and "
+            "Streaming Verification Code are not encrypted. The verification "
+            "code is separate from the DVR password and is sent only to the "
+            "optional Hikvision PlayCtrl helper. "
             "The optional Hikvision SDK is proprietary, must be obtained separately, "
             "and is not bundled with this application."
         )
@@ -1296,6 +1331,7 @@ class SettingsDialog(QDialog):
             sdk_port=self._parse_port(self.edit_sdk_port, "SDK"),
             username=self.edit_user.text().strip(),
             password=self.edit_pass.text(),
+            stream_verification_code=self.edit_stream_verification_code.text(),
             channels=channels,
             sdk_directory=self.edit_sdk_directory.text().strip(),
         )
@@ -1563,15 +1599,18 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
 
         # FPS selector
-        toolbar.addWidget(QLabel(" Speed (RTSP): "))
+        toolbar.addWidget(QLabel(" Speed (FPS): "))
         self.combo_fps = QComboBox()
         self.combo_fps.addItem("5 FPS (Low Bandwidth)", 5)
         self.combo_fps.addItem("10 FPS (Balanced)", 10)
         self.combo_fps.addItem("15 FPS (Smooth)", 15)
         self.combo_fps.addItem("Max FPS", 30)
         self.combo_fps.setCurrentIndex(1)
-        self.combo_fps.setToolTip("RTSP frame-rate limit. HTTP snapshot mode is fixed at 5 FPS.")
-        self.combo_fps.setEnabled(self.backend_mode == "RTSP")
+        self.combo_fps.setToolTip(
+            "Limits displayed frame rate for RTSP and Hikvision SDK. "
+            "HTTP snapshot mode is fixed at 5 FPS."
+        )
+        self.combo_fps.setEnabled(supports_selectable_fps(self.backend_mode))
         self.combo_fps.currentIndexChanged.connect(self._on_fps_changed)
         toolbar.addWidget(self.combo_fps)
 
@@ -1780,7 +1819,7 @@ class MainWindow(QMainWindow):
                 combo.setCurrentIndex(index)
                 combo.blockSignals(signals_were_blocked)
 
-        self.combo_fps.setEnabled(self.backend_mode == "RTSP")
+        self.combo_fps.setEnabled(supports_selectable_fps(self.backend_mode))
         self.chk_auto_motion.setChecked(state.auto_save_motion)
         self.btn_toggle_log.setChecked(state.events_visible)
         self.log_panel.setVisible(state.events_visible)
@@ -1807,7 +1846,7 @@ class MainWindow(QMainWindow):
     def _start_threads(self):
         target_fps = self.combo_fps.currentData()
         res_mode = self.combo_quality.currentData()
-        self.combo_fps.setEnabled(self.backend_mode == "RTSP")
+        self.combo_fps.setEnabled(supports_selectable_fps(self.backend_mode))
 
         # Stop existing workers
         for w in self.workers.values():
@@ -1836,12 +1875,11 @@ class MainWindow(QMainWindow):
             )
             worker.set_active(is_active)
             worker.set_focused(is_focused)
-            if self.backend_mode == "RTSP":
-                worker.set_target_fps(target_fps)
-            elif self.backend_mode == "HIKVISION":
-                worker.set_target_fps(10)
-            else:
-                worker.set_target_fps(5)
+            worker.set_target_fps(
+                target_fps
+                if supports_selectable_fps(self.backend_mode)
+                else 5
+            )
             worker.set_resolution_mode(res_mode)
 
             worker.frame_ready.connect(self._on_frame_ready)
@@ -2001,7 +2039,7 @@ class MainWindow(QMainWindow):
             w.set_paused(self.is_paused)
 
     def _on_fps_changed(self, index: int):
-        if self.backend_mode != "RTSP":
+        if not supports_selectable_fps(self.backend_mode):
             return
         fps = self.combo_fps.currentData()
         for w in self.workers.values():
@@ -2129,7 +2167,11 @@ class MainWindow(QMainWindow):
         output_path = Path(selected_path)
         if output_path.suffix.lower() != ".mp4":
             output_path = output_path.with_suffix(".mp4")
-        fps_limit = self.combo_fps.currentData() if self.backend_mode == "RTSP" else 5
+        fps_limit = (
+            self.combo_fps.currentData()
+            if supports_selectable_fps(self.backend_mode)
+            else 5
+        )
         measured_fps = self.tiles[channel].fps
         fps = (
             min(fps_limit, max(1, round(measured_fps)))
@@ -2190,7 +2232,7 @@ class MainWindow(QMainWindow):
         self.btn_pause.setEnabled(True)
         self.btn_settings.setEnabled(True)
         self.combo_backend.setEnabled(True)
-        self.combo_fps.setEnabled(self.backend_mode == "RTSP")
+        self.combo_fps.setEnabled(supports_selectable_fps(self.backend_mode))
         self._sync_worker_activity()
 
     def _launch_rtsp(self):

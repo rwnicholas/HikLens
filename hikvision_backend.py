@@ -47,13 +47,17 @@ class HikvisionCameraPlayer(QThread):
         self._running = True
         self._active = True
         self._paused = False
+        self._focused = False
+        self._resolution_mode = "auto"
         self._target_fps = 10
         self._reported_inactive = False
         self._stop_event = threading.Event()
+        self._configuration_changed = threading.Event()
         self._process_lock = threading.Lock()
         self._process: subprocess.Popen | None = None
         self._diagnostics_lock = threading.Lock()
         self._diagnostics: dict = {}
+        self._verification_code_notice_logged = False
         self._last_logged_status: dict[str, str] = {}
         self._last_logged_error = ""
         self._frames_counted = 0
@@ -83,7 +87,10 @@ class HikvisionCameraPlayer(QThread):
                 self._reported_inactive = True
 
     def set_focused(self, focused: bool):
-        del focused
+        focused = bool(focused)
+        if self._focused != focused:
+            self._focused = focused
+            self._restart_for_stream_change()
 
     def set_paused(self, paused: bool):
         self._paused = bool(paused)
@@ -92,7 +99,21 @@ class HikvisionCameraPlayer(QThread):
         self._target_fps = max(1, min(int(fps), 30))
 
     def set_resolution_mode(self, mode: str):
-        del mode
+        if self._resolution_mode != mode:
+            self._resolution_mode = mode
+            self._restart_for_stream_change()
+
+    def _restart_for_stream_change(self):
+        self._configuration_changed.set()
+        self._stop_event.set()
+        self._terminate_process()
+
+    def _stream_type(self) -> int:
+        if self._resolution_mode == "max":
+            return 0
+        if self._resolution_mode == "standard":
+            return 1
+        return 0 if self._focused else 1
 
     def run(self):
         installation = None
@@ -106,6 +127,7 @@ class HikvisionCameraPlayer(QThread):
                 continue
             self._reported_inactive = False
             self._stop_event.clear()
+            self._configuration_changed.clear()
 
             if installation is None:
                 self.status_changed.emit(
@@ -124,11 +146,18 @@ class HikvisionCameraPlayer(QThread):
                     return
 
             self.status_changed.emit(
-                self.channel, "Starting Hikvision encrypted preview…", False
+                self.channel,
+                "Starting Hikvision "
+                f"{'main' if self._stream_type() == 0 else 'sub'}-stream preview…",
+                False,
             )
             exit_code, intentional_stop, error = self._run_helper(installation)
             if not self._running:
                 break
+            if self._configuration_changed.is_set():
+                continue
+            if not self._active:
+                continue
             if intentional_stop:
                 continue
 
@@ -168,10 +197,16 @@ class HikvisionCameraPlayer(QThread):
                 "HIKVISION_PORT": str(self.config.sdk_port),
                 "HIKVISION_USERNAME": self.config.username,
                 "HIKVISION_PASSWORD": self.config.password,
+                "HIKVISION_STREAM_VERIFICATION_CODE": (
+                    self.config.stream_verification_code
+                ),
                 "HIKVISION_CHANNEL": str(self.channel),
+                "HIKVISION_STREAM_TYPE": str(self._stream_type()),
                 "HIKVISION_RUN_SECONDS": "0",
                 "HIKVISION_PLAYM4_KEY_LENGTH": "128",
-                "HIKVISION_TARGET_FPS": str(self._target_fps),
+                # The helper reads this limit at startup; apply the live UI cap
+                # in _emit_frame so selector changes take effect immediately.
+                "HIKVISION_TARGET_FPS": "30",
                 "HIKVISION_FRAME_FD": str(write_fd),
                 "EGL_PLATFORM": "surfaceless",
             }
@@ -202,7 +237,11 @@ class HikvisionCameraPlayer(QThread):
 
         with self._process_lock:
             self._process = process
-        if not self._running or not self._active:
+        if (
+            not self._running
+            or not self._active
+            or self._configuration_changed.is_set()
+        ):
             self._terminate_process()
         diagnostic_thread = threading.Thread(
             target=self._read_diagnostics,
@@ -213,7 +252,11 @@ class HikvisionCameraPlayer(QThread):
 
         protocol_error = ""
         try:
-            while self._running and self._active:
+            while (
+                self._running
+                and self._active
+                and not self._configuration_changed.is_set()
+            ):
                 header = self._read_exact(read_fd, _FRAME_HEADER.size, process)
                 if header is None:
                     break
@@ -260,7 +303,11 @@ class HikvisionCameraPlayer(QThread):
 
         with self._diagnostics_lock:
             diagnostics = dict(self._diagnostics)
-        intentional_stop = not self._running or not self._active
+        intentional_stop = (
+            not self._running
+            or not self._active
+            or self._configuration_changed.is_set()
+        )
         error = protocol_error or str(diagnostics.get("decoder_error", ""))
         if exit_code == 9 and not error:
             error = "No decoded frames received; encrypted video could not be decoded."
@@ -357,11 +404,36 @@ class HikvisionCameraPlayer(QThread):
                 )
 
     def _apply_diagnostics(self, diagnostic: dict):
+        diagnostic = dict(diagnostic)
+        code_configured = bool(self.config.stream_verification_code)
+        diagnostic["stream_verification_code_configured"] = code_configured
+        code_applied = bool(
+            diagnostic.get("stream_verification_code_applied", False)
+        )
+        diagnostic["stream_verification_code_applied"] = code_applied
         with self._diagnostics_lock:
             self._diagnostics.update(diagnostic)
             snapshot = dict(self._diagnostics)
 
         self.diagnostics_updated.emit(self.channel, snapshot)
+        if not code_applied and not self._verification_code_notice_logged:
+            if code_configured:
+                message = (
+                    "The Streaming Verification Code is configured but PlayCtrl "
+                    "has not accepted it for decoder setup."
+                )
+            else:
+                message = (
+                    "The Hikvision encrypted preview requires a Streaming "
+                    "Verification Code; configure it separately from the DVR "
+                    "password."
+                )
+            self.log_event.emit(
+                self.channel,
+                "warn",
+                message,
+            )
+            self._verification_code_notice_logged = True
         for field, label in _STATUS_FIELDS.items():
             status = str(diagnostic.get(field, "pending"))
             if status in ("pending", self._last_logged_status.get(field)):

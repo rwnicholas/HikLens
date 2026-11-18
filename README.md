@@ -11,7 +11,8 @@ A modern desktop application built in Python (PySide6) to monitor Hikvision DVR 
    - **`Embedded RTSP (Selectable FPS)`**: Connects directly to the DVR's RTSP hardware stream and embeds video in the app tiles. The **Speed** selector limits the displayed frame rate in this mode.
    - RTSP/FFmpeg remains the default backend; existing saved backend choices
      are preserved. Switch engines from the **Engine** dropdown on the toolbar.
-     The Speed selector is disabled for HTTP and Hikvision capture.
+     The Speed selector applies to RTSP and Hikvision SDK display output; HTTP
+     snapshot mode remains fixed at 5 FPS.
    - **`Hikvision SDK (encrypted stream)`** is an optional Linux backend that
      uses the separately installed official HCNetSDK and PlayCtrl package.
      Its decryption status is reported explicitly; no frame is displayed unless
@@ -31,6 +32,8 @@ A modern desktop application built in Python (PySide6) to monitor Hikvision DVR 
      - `Auto (1080p Focus / 480p Grid)`: Uses smooth sub-stream for the 4-camera grid, and automatically switches to **Full HD 1080p** whenever you focus on an individual camera.
      - `Max (1080p Full HD Always)`: Forces all cameras to stream at full 1080p resolution.
      - `Standard (480p Fast)`: Low-bandwidth mode.
+     - These modes also select the Hikvision SDK main/sub-stream; switching
+       quality or focus restarts that camera's SDK preview.
    - Live resolution badge (e.g. `1920x1088`) is displayed on each camera tile in real time.
 
 4. **Real-Time Motion Detection (AlertStream Integration)**:
@@ -133,52 +136,82 @@ setting exists. The default IP is the documentation-only address `192.0.2.1`;
 set it to your DVR's address before connecting. HTTP and RTSP ports default to
 `80` and `554`.
 
-The password is stored locally in the user's application settings and is not
-encrypted. On Linux, the settings file is restricted to the current user.
+The **Password** field is the DVR account password. **Streaming Verification
+Code** is a separate, optional Hikvision stream-encryption value and is not
+interchangeable with the account password. It can also be supplied through
+`HIKVISION_STREAM_VERIFICATION_CODE`. Both values are stored locally in the
+user's application settings and are not encrypted; on Linux, the settings file
+is restricted to the current user.
 
 ### Optional Hikvision Linux SDK backend
 
 The HTTP and RTSP/FFmpeg backends remain available and do not require vendor
 libraries. RTSP/FFmpeg remains the default. To use the optional Hikvision
-backend, obtain a Linux HCNetSDK package directly from Hikvision and extract it
-outside this source tree. On x86-64, Device Network SDK_Linux64 V6.1.11.40
-build 20260922 was validated for the standalone POC; other releases and
-architectures must match your host and be tested with their own headers and
-libraries.
+backend:
 
-In the extracted SDK directory, build the small helper against that package:
+1. Open Hikvision's official [HiTools SDK download page](https://www.hikvision.com/en/support/tools/hitools/clf4633a00e385d6ea/)
+   and download the **Device Network SDK for Linux 64-bit** package matching
+   your computer's CPU architecture. For x86-64, **V6.1.11.40,
+   build 20260922** is the version validated with this application. Hikvision
+   may require an account or acceptance of its license terms to access the
+   download.
+2. Extract the archive outside the application source directory. For example:
 
-```bash
-make -C poc/hikvision-sdk helper \
-  SDK_ROOT="$HOME/Downloads/EN-HCNetSDKV6.1.11.40_build20260922_linux64"
-```
+   ```text
+   ~/Downloads/EN-HCNetSDKV6.1.11.40_build20260922_linux64/
+   ```
+
+   Use the extracted SDK root containing `lib/`, `incEn/`, and `QtDemo/`—not
+   the `lib/` subdirectory—as the SDK directory.
+3. Install `make` and a C++17 compiler (`g++`), then build the application
+   helper against the SDK you downloaded:
+
+   ```bash
+   make -C hikvision-sdk helper \
+     SDK_ROOT="$HOME/Downloads/EN-HCNetSDKV6.1.11.40_build20260922_linux64"
+   ```
 
 The helper is installed to
-`~/.local/lib/hikvision-camera-viewer/hikvision_stream_helper`, not committed
-or bundled. In **Settings**, set the Hikvision SDK Directory to the extracted
-SDK root (the directory containing `lib/`, `incEn/`, and `QtDemo/`; also
-configurable with `HIKVISION_SDK_DIR`) and confirm the DVR SDK port, normally
-8000. The viewer checks the host/SDK ELF architecture, required libraries,
-and runs a local HCNetSDK initialization / PlayCtrl allocation check before
-starting capture. The backend reports missing or incompatible dependencies
-instead of falling back to RTSP.
+`~/.local/lib/hikvision-camera-viewer/hikvision_stream_helper`; it is not
+committed or bundled. Start the viewer, open **Settings**, and set:
+
+- **Hikvision SDK Directory** to the extracted SDK root (or set
+  `HIKVISION_SDK_DIR` before starting the application).
+- **Hikvision SDK Port** to the DVR's SDK port, usually `8000`.
+- **Username** and **Password** to a DVR account with live-view permission.
+- **Streaming Verification Code** to the separate Platform Access stream
+  encryption code; it is not the DVR account password.
+
+Select **Hikvision SDK (encrypted stream)** in the toolbar's **Engine**
+selector. Choose the SDK directory itself, not its `lib/` folder. Before
+capture, the application checks the SDK architecture and required libraries
+and runs a local HCNetSDK initialization / PlayCtrl allocation check. Missing
+or incompatible dependencies are reported explicitly; the application does
+not silently fall back to RTSP.
 
 PlayCtrl runs in a separate helper process with a headless/surfaceless
 environment so its EGL settings cannot change the Qt application's Wayland or
-X11 session. The current DVR test successfully authenticated, retrieved a
-stream key, configured the HCNetSDK secret key, started preview, and delivered
-encrypted stream chunks to PlayCtrl. **It produced zero decoded frames.**
-Consequently this is an integration of the capture and diagnostic pipeline,
-not a verified decryption solution; the application reports a clear failure
-instead of displaying black frames or silently switching backends. See the
-[standalone SDK POC notes](./poc/hikvision-sdk/README.md) for tested results.
+X11 session. The helper passes the retrieved 16-byte AES key to
+`NET_DVR_SetSDKSecretKey` and the separate Streaming Verification Code to
+`PlayM4_SetSecretKey` before opening the decoder stream. The application
+reports the verification code as applied only when the PlayCtrl call succeeds.
+On the `iDS-7204HQHI-M1/T`, channel 1 has been verified through the application
+frame pipeline at 960x480 on the sub-stream and 1920x1088 on the main stream.
+This verifies the tested device and configuration, not every Hikvision model
+or firmware. See the [Hikvision SDK helper guide](./hikvision-sdk/README.md)
+for build and diagnostic details.
+The documented ISAPI `PUT /ISAPI/System/Network/EZVIZ/secretKey?format=json`
+edits the Guarding Vision verification code on the device; it is not called by
+the viewer and is not required for local decoder configuration.
 
 Hikvision SDK and PlayCtrl are proprietary vendor components. Obtain them
 through Hikvision and review the package's license and redistribution terms.
 This project does not ship, download, or redistribute their binaries. The
-Flatpak sandbox does not grant access to arbitrary host SDK directories; use a
-native installation or AppImage for the external SDK backend unless you
-deliberately grant the Flatpak access to the separately installed SDK. The
+helper is built locally from the included integration source against the
+separately obtained SDK. The Flatpak sandbox does not grant access to arbitrary
+host SDK directories. Use a native installation or AppImage for the external
+SDK backend unless you deliberately grant the Flatpak access to the separately
+installed SDK. The
 existing HTTP and RTSP features remain usable without those permissions or
 libraries.
 
