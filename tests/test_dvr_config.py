@@ -201,6 +201,16 @@ class DVRConfigSettingsTests(unittest.TestCase):
         self.assertEqual(dialog.timeline_widget.offset_seconds, 240)
         self.assertEqual(dialog.timeline_slider.value(), 240)
 
+        # Playback speed selector provides 0.25x, 0.5x, 1x, 2x, 4x
+        speeds = [
+            dialog.combo_speed.itemData(i)
+            for i in range(dialog.combo_speed.count())
+        ]
+        self.assertEqual(speeds, [0.25, 0.5, 1.0, 2.0, 4.0])
+        self.assertEqual(dialog.selected_playback_speed(), 1.0)
+        dialog.combo_speed.setCurrentIndex(4)  # 4x
+        self.assertEqual(dialog.selected_playback_speed(), 4.0)
+
 
 if __name__ == "__main__":
     unittest.main()

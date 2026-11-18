@@ -1741,8 +1741,8 @@ class RecordingsDialog(QDialog):
         self._playback_started_receiving_frames = False
 
         self.setWindowTitle("DVR Recordings Playback (Hikvision SDK)")
-        self.resize(1120, 740)
-        self.setMinimumSize(840, 560)
+        self.resize(1260, 760)
+        self.setMinimumSize(1020, 580)
         self.setStyleSheet("""
             QDialog {
                 background-color: #0b0e14;
@@ -1824,12 +1824,14 @@ class RecordingsDialog(QDialog):
         self.start_time_edit = QDateTimeEdit(now.addDays(-1))
         self.start_time_edit.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
         self.start_time_edit.setCalendarPopup(True)
+        self.start_time_edit.setMinimumWidth(185)
         controls_row.addWidget(self.start_time_edit)
 
         controls_row.addWidget(QLabel("To:"))
         self.end_time_edit = QDateTimeEdit(now)
         self.end_time_edit.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
         self.end_time_edit.setCalendarPopup(True)
+        self.end_time_edit.setMinimumWidth(185)
         controls_row.addWidget(self.end_time_edit)
 
         controls_row.addWidget(QLabel("Stream:"))
@@ -1943,6 +1945,24 @@ class RecordingsDialog(QDialog):
         self.btn_stop.clicked.connect(self.stop_playback)
         player_controls.addWidget(self.btn_stop)
 
+        player_controls.addWidget(QLabel("Speed:"))
+        self.combo_speed = QComboBox()
+        for label, factor in (
+            ("0.25x", 0.25),
+            ("0.5x", 0.5),
+            ("1x", 1.0),
+            ("2x", 2.0),
+            ("4x", 4.0),
+        ):
+            self.combo_speed.addItem(label, factor)
+        self.combo_speed.setCurrentIndex(2)  # 1x default
+        self.combo_speed.setFixedWidth(90)
+        self.combo_speed.setToolTip("Playback speed (0.25x, 0.5x, 1x, 2x, 4x)")
+        self.combo_speed.currentIndexChanged.connect(
+            self._on_playback_speed_changed
+        )
+        player_controls.addWidget(self.combo_speed)
+
         self.lbl_status = QLabel("Idle")
         player_controls.addWidget(self.lbl_status, 1)
 
@@ -1952,8 +1972,9 @@ class RecordingsDialog(QDialog):
 
         right_layout.addLayout(player_controls)
         splitter.addWidget(right_panel)
-        splitter.setSizes([360, 760])
+        splitter.setSizes([380, 880])
 
+        self._clock_fraction = 0.0
         self.playback_clock_timer = QTimer(self)
         self.playback_clock_timer.setInterval(1000)
         self.playback_clock_timer.timeout.connect(self._advance_playback_clock)
@@ -2062,6 +2083,15 @@ class RecordingsDialog(QDialog):
 
     def _on_slider_released(self):
         self.seek_to_timeline_offset(self.timeline_slider.value())
+
+    def selected_playback_speed(self) -> float:
+        data = self.combo_speed.currentData()
+        return float(data) if data is not None else 1.0
+
+    def _on_playback_speed_changed(self):
+        self._clock_fraction = 0.0
+        if self.player is not None and self.timeline_widget.duration_seconds > 0:
+            self.seek_to_timeline_offset(self.timeline_widget.offset_seconds)
 
     def skip_seconds(self, delta_seconds: int):
         if self.timeline_widget.duration_seconds <= 0:
@@ -2289,6 +2319,7 @@ class RecordingsDialog(QDialog):
         self.playback_tile.lbl_title.setText(f"CAMERA {channel} (PLAYBACK)")
         self.is_paused = False
         self._playback_started_receiving_frames = False
+        self._clock_fraction = 0.0
         self.btn_pause.setChecked(False)
         self.btn_pause.setText("Pause")
         self.btn_pause.setIcon(_make_icon("pause"))
@@ -2296,6 +2327,7 @@ class RecordingsDialog(QDialog):
         self.btn_stop.setEnabled(True)
 
         stream_type = int(self.combo_stream.currentData())
+        playback_speed = self.selected_playback_speed()
         player = HikvisionPlaybackPlayer(
             channel=channel,
             config=self.config,
@@ -2304,6 +2336,7 @@ class RecordingsDialog(QDialog):
             recording_name=recording_name,
             stream_type=stream_type,
             playback_position_percent=playback_position_percent,
+            playback_speed=playback_speed,
             parent=self,
         )
         player.frame_ready.connect(self._on_playback_frame)
@@ -2314,12 +2347,15 @@ class RecordingsDialog(QDialog):
         player.playback_finished.connect(self._on_playback_finished)
         self.player = player
         target_label = recording_name or f"{start_time} → {end_time}"
+        speed_text = self.combo_speed.currentText()
         if playback_position_percent > 0:
             self.lbl_status.setText(
-                f"Playing {target_label} from {start_time} ({playback_position_percent}%)"
+                f"Playing {target_label} from {start_time} ({playback_position_percent}%, {speed_text})"
             )
         else:
-            self.lbl_status.setText(f"Starting playback: {target_label}")
+            self.lbl_status.setText(
+                f"Starting playback ({speed_text}): {target_label}"
+            )
         player.start()
         self.playback_clock_timer.start()
 
@@ -2377,7 +2413,14 @@ class RecordingsDialog(QDialog):
         duration = self.timeline_widget.duration_seconds
         if duration <= 0:
             return
-        next_offset = min(duration, self.timeline_widget.offset_seconds + 1)
+        self._clock_fraction += self.selected_playback_speed()
+        whole_seconds = int(self._clock_fraction)
+        if whole_seconds <= 0:
+            return
+        self._clock_fraction -= whole_seconds
+        next_offset = min(
+            duration, self.timeline_widget.offset_seconds + whole_seconds
+        )
         self._set_timeline_offset(next_offset)
 
     @Slot(int, bool, str)

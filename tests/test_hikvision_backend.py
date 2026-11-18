@@ -380,6 +380,7 @@ class HikvisionBackendTests(unittest.TestCase):
             recording_name="ch02_0001",
             stream_type=0,
             playback_position_percent=50,
+            playback_speed=4.0,
         )
         player.test_events = SignalEvents(player)
         process = types.SimpleNamespace(
@@ -414,6 +415,7 @@ class HikvisionBackendTests(unittest.TestCase):
         self.assertEqual(child_env["HIKVISION_START_TIME"], "2026-11-18 10:07:30")
         self.assertEqual(child_env["HIKVISION_END_TIME"], "2026-11-18 10:15:00")
         self.assertEqual(child_env["HIKVISION_PLAYBACK_POS"], "50")
+        self.assertEqual(child_env["HIKVISION_PLAYBACK_SPEED_STEPS"], "2")
         self.assertIn((2, 45), player.test_events.progress_updated)
         self.assertIn(
             (2, "2026-11-18 10:08:12"), player.test_events.osd_time_updated

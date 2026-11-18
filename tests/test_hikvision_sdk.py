@@ -340,7 +340,7 @@ class HikvisionSDKDiscoveryTests(unittest.TestCase):
             updated_helper.write_bytes(
                 updated_helper.read_bytes()
                 + b"\0" * 100
-                + b"--list-recordings\0--playback\0HIKVISION_PLAYBACK_POS\0"
+                + b"--list-recordings\0--playback\0HIKVISION_PLAYBACK_POS\0HIKVISION_PLAYBACK_SPEED_STEPS\0"
             )
             updated_helper.chmod(0o755)
             old_install = hikvision_sdk.HikvisionSDKInstallation(

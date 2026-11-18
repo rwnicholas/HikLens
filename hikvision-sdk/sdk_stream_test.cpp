@@ -36,6 +36,9 @@ constexpr LONG NET_DVR_FILE_EXCEPTION = 1004;
 constexpr DWORD NET_DVR_PLAYSTART = 1;
 constexpr DWORD NET_DVR_PLAYPAUSE = 3;
 constexpr DWORD NET_DVR_PLAYRESTART = 4;
+constexpr DWORD NET_DVR_PLAYFAST = 5;
+constexpr DWORD NET_DVR_PLAYSLOW = 6;
+constexpr DWORD NET_DVR_PLAYNORMAL = 7;
 constexpr DWORD NET_DVR_PLAYSETPOS = 12;
 constexpr DWORD NET_DVR_PLAYGETPOS = 13;
 
@@ -248,6 +251,8 @@ int PlayM4_SetDecCallBackExMend(
     int nPort, void (*DecCBFun)(int, char*, int, FRAME_INFO*, void*, int),
     char* pDest, int nDestSize, void* nUser);
 int PlayM4_Play(int nPort, PLAYM4_HWND hWnd);
+int PlayM4_Fast(int nPort);
+int PlayM4_Slow(int nPort);
 int PlayM4_InputData(int nPort, unsigned char* pBuf, unsigned int nSize);
 int PlayM4_Stop(int nPort);
 int PlayM4_CloseStream(int nPort);
@@ -295,6 +300,7 @@ struct TestState {
     int frame_output_fd{-1};
     int target_fps{10};
     int stream_type{0};
+    int playback_speed_steps{0};
     bool playback_mode{false};
     std::mutex frame_output_mutex;
     std::chrono::steady_clock::time_point last_output_time{};
@@ -827,6 +833,14 @@ void CALLBACK stream_callback(LONG, DWORD data_type, BYTE* buffer,
             PlayM4_CloseStream(port);
             PlayM4_FreePort(port);
         } else {
+            if (state->playback_mode) {
+                for (int step = 0; step < state->playback_speed_steps; ++step) {
+                    PlayM4_Fast(port);
+                }
+                for (int step = 0; step > state->playback_speed_steps; --step) {
+                    PlayM4_Slow(port);
+                }
+            }
             state->playctrl_status.store(1);
         }
         return;
@@ -1087,6 +1101,7 @@ int main(int argc, char** argv) {
     const std::string start_time_text = env_or("HIKVISION_START_TIME");
     const std::string end_time_text = env_or("HIKVISION_END_TIME");
     long playback_pos = 0;
+    long playback_speed_steps = 0;
     NET_DVR_TIME playback_start_time{};
     NET_DVR_TIME playback_end_time{};
     const bool has_playback_time_range =
@@ -1094,11 +1109,14 @@ int main(int argc, char** argv) {
         parse_dvr_time(start_time_text, playback_start_time) &&
         parse_dvr_time(end_time_text, playback_end_time);
     if (!parse_integer("HIKVISION_PLAYBACK_POS", 0, 99, 0, playback_pos) ||
+        !parse_integer("HIKVISION_PLAYBACK_SPEED_STEPS", -4, 4, 0,
+                       playback_speed_steps) ||
         (playback_mode && playback_file.empty() && !has_playback_time_range)) {
         std::cerr << "Set HIKVISION_PLAYBACK_FILE or valid "
                      "HIKVISION_START_TIME/HIKVISION_END_TIME for playback\n";
         return 2;
     }
+    state.playback_speed_steps = static_cast<int>(playback_speed_steps);
 
     NET_DVR_SetLogToFile(0, nullptr, TRUE);
     if (!NET_DVR_Init()) {
@@ -1263,6 +1281,14 @@ int main(int argc, char** argv) {
             NET_DVR_PlayBackControl_V40(stream_handle, NET_DVR_PLAYSETPOS,
                                         &seek_pos, sizeof(seek_pos), nullptr,
                                         nullptr);
+        }
+        for (long step = 0; step < playback_speed_steps; ++step) {
+            NET_DVR_PlayBackControl_V40(stream_handle, NET_DVR_PLAYFAST,
+                                        nullptr, 0, nullptr, nullptr);
+        }
+        for (long step = 0; step > playback_speed_steps; --step) {
+            NET_DVR_PlayBackControl_V40(stream_handle, NET_DVR_PLAYSLOW,
+                                        nullptr, 0, nullptr, nullptr);
         }
         state.playback_progress.store(static_cast<int>(playback_pos));
     } else {

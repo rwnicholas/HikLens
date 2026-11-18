@@ -119,6 +119,7 @@ def _helper_supports_recordings(helper: str | os.PathLike[str]) -> bool:
         b"--list-recordings" in data
         and b"--playback" in data
         and b"HIKVISION_PLAYBACK_POS" in data
+        and b"HIKVISION_PLAYBACK_SPEED_STEPS" in data
     )
 
 

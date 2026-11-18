@@ -502,6 +502,14 @@ class HikvisionPlaybackPlayer(HikvisionCameraPlayer):
     progress_updated = Signal(int, int)
     osd_time_updated = Signal(int, str)
 
+    _SPEED_STEPS = {
+        0.25: -2,
+        0.5: -1,
+        1.0: 0,
+        2.0: 1,
+        4.0: 2,
+    }
+
     def __init__(
         self,
         channel: int,
@@ -511,6 +519,7 @@ class HikvisionPlaybackPlayer(HikvisionCameraPlayer):
         recording_name: str = "",
         stream_type: int = 0,
         playback_position_percent: int = 0,
+        playback_speed: float = 1.0,
         parent=None,
     ):
         super().__init__(channel, config, parent=parent)
@@ -521,9 +530,18 @@ class HikvisionPlaybackPlayer(HikvisionCameraPlayer):
         self.playback_position_percent = max(
             0, min(99, int(playback_position_percent))
         )
+        self.playback_speed = float(playback_speed) if playback_speed > 0 else 1.0
+        self.playback_speed_steps = self._speed_to_steps(self.playback_speed)
         self._target_fps = 30
         self._last_progress = -1
         self._last_osd_time = ""
+
+    @classmethod
+    def _speed_to_steps(cls, speed: float) -> int:
+        if speed in cls._SPEED_STEPS:
+            return cls._SPEED_STEPS[speed]
+        closest = min(cls._SPEED_STEPS, key=lambda candidate: abs(candidate - speed))
+        return cls._SPEED_STEPS[closest]
 
     def _stream_type(self) -> int:
         return self._playback_stream_type
@@ -538,6 +556,7 @@ class HikvisionPlaybackPlayer(HikvisionCameraPlayer):
             "HIKVISION_START_TIME": self.start_time,
             "HIKVISION_END_TIME": self.end_time,
             "HIKVISION_PLAYBACK_POS": str(self.playback_position_percent),
+            "HIKVISION_PLAYBACK_SPEED_STEPS": str(self.playback_speed_steps),
         }
 
     def _online_status_text(self) -> str:

@@ -70,6 +70,8 @@ portable-helper: sdk_stream_test.cpp
 		'void PlayM4_SetDecodeFrameType() {}' \
 		'void PlayM4_SetDecCallBackExMend() {}' \
 		'void PlayM4_Play() {}' \
+		'void PlayM4_Fast() {}' \
+		'void PlayM4_Slow() {}' \
 		'void PlayM4_InputData() {}' \
 		'void PlayM4_Stop() {}' \
 		'void PlayM4_CloseStream() {}' \
