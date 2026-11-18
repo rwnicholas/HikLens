@@ -11,6 +11,7 @@ finish-args:
   - --socket=fallback-x11
   - --device=dri
   - --filesystem=xdg-pictures
+  - --filesystem=xdg-download:ro
 modules:
   - name: hikvision-linux
     buildsystem: simple
@@ -27,6 +28,7 @@ modules:
       - install -d /app/share/hikvision-linux/hikvision-sdk
       - install -Dm644 Makefile /app/share/hikvision-linux/hikvision-sdk/Makefile
       - install -Dm644 sdk_stream_test.cpp /app/share/hikvision-linux/hikvision-sdk/sdk_stream_test.cpp
+      - make -C /app/share/hikvision-linux/hikvision-sdk portable-helper HELPER=/app/lib/hikvision-camera-viewer/hikvision_stream_helper
       - install -Dm644 io.github.rwnicholas.HikvisionLinux.desktop /app/share/applications/io.github.rwnicholas.HikvisionLinux.desktop
       - install -Dm644 io.github.rwnicholas.HikvisionLinux.svg /app/share/icons/hicolor/scalable/apps/io.github.rwnicholas.HikvisionLinux.svg
       - install -Dm644 io.github.rwnicholas.HikvisionLinux.appdata.xml /app/share/metainfo/io.github.rwnicholas.HikvisionLinux.appdata.xml

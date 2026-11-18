@@ -14,7 +14,11 @@ import time
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QImage
 
-from hikvision_sdk import HikvisionSDKError, discover_hikvision_sdk
+from hikvision_sdk import (
+    HikvisionSDKError,
+    discover_hikvision_sdk,
+    helper_runtime_environment,
+)
 
 
 _FRAME_HEADER = struct.Struct("<4sIII")
@@ -190,7 +194,10 @@ class HikvisionCameraPlayer(QThread):
 
     def _run_helper(self, installation) -> tuple[int, bool, str]:
         read_fd, write_fd = os.pipe()
-        env = os.environ.copy()
+        env = helper_runtime_environment(
+            getattr(installation, "library_directory", None),
+            getattr(installation, "component_directory", None),
+        )
         env.update(
             {
                 "HIKVISION_HOST": self.config.ip,
@@ -208,11 +215,8 @@ class HikvisionCameraPlayer(QThread):
                 # in _emit_frame so selector changes take effect immediately.
                 "HIKVISION_TARGET_FPS": "30",
                 "HIKVISION_FRAME_FD": str(write_fd),
-                "EGL_PLATFORM": "surfaceless",
             }
         )
-        env.pop("DISPLAY", None)
-        env.pop("WAYLAND_DISPLAY", None)
 
         try:
             process = subprocess.Popen(

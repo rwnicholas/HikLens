@@ -1,5 +1,134 @@
+#if __has_include(<HCNetSDK.h>) && __has_include(<LinuxPlayM4.h>)
 #include <HCNetSDK.h>
 #include <LinuxPlayM4.h>
+#else
+#include <cstdint>
+
+#define CALLBACK
+#ifndef TRUE
+#define TRUE 1
+#endif
+#ifndef FALSE
+#define FALSE 0
+#endif
+
+using DWORD = unsigned int;
+using LONG = int;
+using WORD = unsigned short;
+using BYTE = unsigned char;
+using BOOL = int;
+using PLAYM4_HWND = unsigned int;
+
+constexpr int NET_SDK_MAX_VERIFICATION_CODE_LEN = 32;
+constexpr DWORD NET_DVR_GET_AES_KEY = 6113;
+constexpr DWORD NET_DVR_SYSHEAD = 1;
+constexpr DWORD NET_DVR_STREAMDATA = 2;
+constexpr DWORD NET_DVR_AUDIOSTREAMDATA = 3;
+
+constexpr unsigned int STREAME_REALTIME = 0;
+constexpr int ENCRYPT_AES_10R_VIDEO = 2;
+constexpr int T_YV12 = 3;
+constexpr int T_RGB32 = 7;
+
+struct NET_DVR_DEVICEINFO_V40 {
+    BYTE byRes[344];
+};
+
+using fLoginResultCallBack = void (*)(LONG lUserID, DWORD dwResult,
+                                      NET_DVR_DEVICEINFO_V40* lpDeviceInfo,
+                                      void* pUser);
+
+struct NET_DVR_USER_LOGIN_INFO {
+    char sDeviceAddress[129];
+    BYTE byUseTransport;
+    WORD wPort;
+    char sUserName[64];
+    char sPassword[64];
+    fLoginResultCallBack cbLoginResult;
+    void* pUser;
+    BOOL bUseAsynLogin;
+    BYTE byRes3[132];
+};
+
+struct NET_DVR_AES_KEY_INFO {
+    char sAESKey[16];
+    BYTE byRes[64];
+};
+
+struct NET_DVR_PREVIEWINFO {
+    LONG lChannel;
+    DWORD dwStreamType;
+    DWORD dwLinkMode;
+    void* hPlayWnd;
+    DWORD bBlocked;
+    DWORD bPassbackRecord;
+    BYTE byPreviewMode;
+    BYTE byStreamID[32];
+    BYTE byProtoType;
+    BYTE byRes1[2];
+    DWORD dwDisplayBufNum;
+    BYTE byNPQMode;
+    BYTE byRecvMetaData;
+    BYTE byDataType;
+    BYTE byRes[205];
+};
+
+struct ENCRYPT_INFO {
+    long nVideoEncryptType;
+    long nAudioEncryptType;
+    long nSetSecretKey;
+};
+
+struct FRAME_INFO {
+    int nWidth;
+    int nHeight;
+    int nStamp;
+    int nType;
+    int nFrameRate;
+    unsigned int dwFrameNum;
+};
+
+using REALDATACALLBACK = void (*)(LONG lRealHandle, DWORD dwDataType,
+                                  BYTE* pBuffer, DWORD dwBufSize, void* pUser);
+
+extern "C" {
+BOOL NET_DVR_Init();
+BOOL NET_DVR_Cleanup();
+DWORD NET_DVR_GetLastError();
+BOOL NET_DVR_SetLogToFile(DWORD nLogLevel, char* strLogDir, BOOL bAutoDel);
+BOOL NET_DVR_SetConnectTime(DWORD dwWaitTime, DWORD dwTryTimes);
+BOOL NET_DVR_SetReconnect(DWORD dwInterval, BOOL bEnableRecon);
+LONG NET_DVR_Login_V40(NET_DVR_USER_LOGIN_INFO* pLoginInfo,
+                       NET_DVR_DEVICEINFO_V40* lpDeviceInfo);
+BOOL NET_DVR_Logout(LONG lUserID);
+BOOL NET_DVR_GetDVRConfig(LONG lUserID, DWORD dwCommand, LONG lChannel,
+                          void* lpOutBuffer, DWORD dwOutBufferSize,
+                          DWORD* lpBytesReturned);
+BOOL NET_DVR_SetSDKSecretKey(LONG lUserID, char* pSecretKey);
+LONG NET_DVR_RealPlay_V40(LONG lUserID, NET_DVR_PREVIEWINFO* lpPreviewInfo,
+                          REALDATACALLBACK fRealDataCallBack_V30, void* pUser);
+BOOL NET_DVR_StopRealPlay(LONG lRealHandle);
+
+int PlayM4_GetPort(int* nPort);
+int PlayM4_FreePort(int nPort);
+unsigned int PlayM4_GetLastError(int nPort);
+int PlayM4_SetStreamOpenMode(int nPort, unsigned int nMode);
+int PlayM4_SetSecretKey(int nPort, int lKeyType, char* pSecretKey, int lKeyLen);
+int PlayM4_SetEncryptTypeCallBack(
+    int nPort, unsigned int nType,
+    void (*EncryptTypeCBFun)(int, ENCRYPT_INFO*, void*, int), void* nUser);
+int PlayM4_OpenStream(int nPort, unsigned char* pFileHeadBuf,
+                      unsigned int nSize, unsigned int nBufPoolSize);
+int PlayM4_SetDecodeFrameType(int nPort, unsigned int nFrameType);
+int PlayM4_SetDecCallBackExMend(
+    int nPort, void (*DecCBFun)(int, char*, int, FRAME_INFO*, void*, int),
+    char* pDest, int nDestSize, void* nUser);
+int PlayM4_Play(int nPort, PLAYM4_HWND hWnd);
+int PlayM4_InputData(int nPort, unsigned char* pBuf, unsigned int nSize);
+int PlayM4_Stop(int nPort);
+int PlayM4_CloseStream(int nPort);
+}
+#endif
 
 #include <algorithm>
 #include <array>

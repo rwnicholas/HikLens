@@ -1306,8 +1306,9 @@ class SettingsDialog(QDialog):
             "The optional Hikvision SDK is proprietary, must be obtained separately, "
             "and is not bundled with this application. Get SDK opens Hikvision's "
             "official download page; choose an extracted SDK directory before "
-            "building the local helper. Building requires make and a C++17 "
-            "compiler to be available to the application."
+            "clicking Build / Verify Helper. Flatpak and AppImage packages include "
+            "a pre-built open-source helper; source installations build it locally "
+            "with make and a C++17 compiler."
         )
         storage_note.setWordWrap(True)
         layout.addWidget(storage_note)

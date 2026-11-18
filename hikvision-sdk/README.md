@@ -31,6 +31,9 @@ This installs the helper to
 links to the selected external SDK and is not placed in the repository.
 The same build and SDK initialization check are available in the application's
 Settings through **Build / Verify Helper** after choosing the SDK directory.
+The Flatpak and AppImage builds pre-compile the open-source helper using the
+`portable-helper` target so runtime `make` and `g++` are not required in
+packaged environments.
 
 ## Configure the application
 

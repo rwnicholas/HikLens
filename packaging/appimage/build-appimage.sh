@@ -82,6 +82,7 @@ run_builder \
         apt-get update >/dev/null
         apt-get install -y --no-install-recommends \
             binutils \
+            g++ \
             libdbus-1-3 \
             libegl1 \
             libfontconfig1 \
@@ -110,7 +111,8 @@ run_builder \
             libxcb-xfixes0 \
             libxcb-xinerama0 \
             libxcb-xkb1 \
-            libxkbcommon-x11-0 >/dev/null
+            libxkbcommon-x11-0 \
+            make >/dev/null
 
         python -m pip install --disable-pip-version-check --no-cache-dir \
             --root-user-action=ignore \
@@ -183,6 +185,9 @@ PY
             --exclude-library=libfontconfig.so.1 \
             --exclude-library=libfreetype.so.6 \
             --deploy-deps-only "$appdir/usr/lib/hikvision-camera-viewer"
+
+        make -C /src/hikvision-sdk portable-helper \
+            HELPER="$appdir/usr/lib/hikvision-camera-viewer/hikvision_stream_helper"
     '
 
 ARCH=x86_64 "$TOOLS_DIR/appimagetool-x86_64.AppImage" \

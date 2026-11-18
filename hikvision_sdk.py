@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import platform
+import shutil
 import struct
 import subprocess
 import sys
@@ -34,7 +35,7 @@ _ELF_HOSTS = {
     "armv7l": (1, 40),
 }
 _HELPER_CHECK_LOCK = threading.Lock()
-_HELPER_CHECK_CACHE: dict[tuple[str, int, int], str | None] = {}
+_HELPER_CHECK_CACHE: dict[tuple[str, int, int, str, str], str | None] = {}
 HIKVISION_SDK_DOWNLOAD_URL = (
     "https://www.hikvision.com/en/support/tools/hitools/clf4633a00e385d6ea/"
 )
@@ -57,6 +58,51 @@ def _helper_source_directory() -> Path:
     raise HikvisionSDKError(
         "Hikvision helper build sources are missing from this installation. "
         f"Searched: {searched}"
+    )
+
+
+def _compile_helper_directly(
+    source_directory: Path,
+    root: Path,
+) -> subprocess.CompletedProcess[str] | None:
+    compiler = shutil.which("c++") or shutil.which("g++")
+    if not compiler:
+        return None
+    configured_helper = os.environ.get("HIKVISION_HELPER_PATH", "").strip()
+    helper_path = (
+        Path(configured_helper).expanduser()
+        if configured_helper
+        else Path.home() / ".local/lib/hikvision-camera-viewer/hikvision_stream_helper"
+    )
+    helper_path.parent.mkdir(parents=True, exist_ok=True)
+    library_directory = root / "lib"
+    component_directory = library_directory / "HCNetSDKCom"
+    command = [
+        compiler,
+        "-std=c++17",
+        "-O2",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-isystem",
+        str(root / "incEn"),
+        "-isystem",
+        str(root / "QtDemo/includeCn"),
+        str(source_directory / "sdk_stream_test.cpp"),
+        f"-L{library_directory}",
+        f"-Wl,-rpath,{library_directory}:{component_directory}",
+        "-lhcnetsdk",
+        "-lPlayCtrl",
+        "-pthread",
+        "-o",
+        str(helper_path),
+    ]
+    return subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=180,
     )
 
 
@@ -86,9 +132,17 @@ def build_hikvision_helper(
             timeout=180,
         )
     except FileNotFoundError as exc:
-        raise HikvisionSDKError(
-            "Cannot build the Hikvision helper because 'make' is not installed."
-        ) from exc
+        try:
+            return discover_hikvision_sdk(root)
+        except HikvisionSDKError as discover_exc:
+            if "Hikvision stream helper is not built" not in str(discover_exc):
+                raise
+            direct_result = _compile_helper_directly(source_directory, root)
+            if direct_result is None:
+                raise HikvisionSDKError(
+                    "Cannot build the Hikvision helper because 'make' is not installed."
+                ) from exc
+            result = direct_result
     except subprocess.TimeoutExpired as exc:
         raise HikvisionSDKError(
             "Building the Hikvision helper timed out after 180 seconds."
@@ -98,6 +152,18 @@ def build_hikvision_helper(
 
     if result.returncode:
         details = (result.stderr or result.stdout).strip()
+        if any(
+            token in details
+            for token in (
+                "c++: No such file",
+                "c++: not found",
+                "c++: command not found",
+            )
+        ):
+            try:
+                return discover_hikvision_sdk(root)
+            except HikvisionSDKError:
+                pass
         raise HikvisionSDKError(
             "Hikvision helper build failed. Check that the selected SDK package "
             "matches this system and includes its development headers/libraries. "
@@ -133,9 +199,39 @@ def _check_elf_architecture(path: Path, expected: tuple[int, int]) -> None:
         )
 
 
-def _verify_helper(helper: Path) -> None:
+def helper_runtime_environment(
+    library_directory: Path | None = None,
+    component_directory: Path | None = None,
+    base_environment: dict[str, str] | None = None,
+) -> dict[str, str]:
+    helper_environment = (
+        os.environ.copy() if base_environment is None else dict(base_environment)
+    )
+    helper_environment["EGL_PLATFORM"] = "surfaceless"
+    helper_environment.pop("DISPLAY", None)
+    helper_environment.pop("WAYLAND_DISPLAY", None)
+    if library_directory is not None and component_directory is not None:
+        ld_paths = [str(library_directory), str(component_directory)]
+        existing = helper_environment.get("LD_LIBRARY_PATH", "").strip()
+        if existing:
+            ld_paths.append(existing)
+        helper_environment["LD_LIBRARY_PATH"] = ":".join(ld_paths)
+    return helper_environment
+
+
+def _verify_helper(
+    helper: Path,
+    library_directory: Path | None = None,
+    component_directory: Path | None = None,
+) -> None:
     stat = helper.stat()
-    cache_key = (str(helper), stat.st_mtime_ns, stat.st_size)
+    cache_key = (
+        str(helper),
+        stat.st_mtime_ns,
+        stat.st_size,
+        str(library_directory or ""),
+        str(component_directory or ""),
+    )
     with _HELPER_CHECK_LOCK:
         if cache_key in _HELPER_CHECK_CACHE:
             error = _HELPER_CHECK_CACHE[cache_key]
@@ -144,10 +240,10 @@ def _verify_helper(helper: Path) -> None:
             return
 
         try:
-            helper_environment = os.environ.copy()
-            helper_environment["EGL_PLATFORM"] = "surfaceless"
-            helper_environment.pop("DISPLAY", None)
-            helper_environment.pop("WAYLAND_DISPLAY", None)
+            helper_environment = helper_runtime_environment(
+                library_directory,
+                component_directory,
+            )
             result = subprocess.run(
                 [str(helper), "--check-sdk"],
                 check=False,
@@ -190,12 +286,22 @@ def _candidate_roots(configured_directory: str | os.PathLike[str] | None):
     yield Path("/usr/local/lib/hikvision-sdk")
 
 
+def _packaged_helpers():
+    bundle_directory = getattr(sys, "_MEIPASS", None)
+    if bundle_directory:
+        yield Path(bundle_directory) / "hikvision-sdk" / "hikvision_stream_helper"
+        yield Path(bundle_directory).parent / "hikvision_stream_helper"
+    yield Path(__file__).resolve().parent / "hikvision_stream_helper"
+    yield Path("/app/lib/hikvision-camera-viewer/hikvision_stream_helper")
+
+
 def _candidate_helpers(root: Path):
     configured_helper = os.environ.get("HIKVISION_HELPER_PATH", "").strip()
     if configured_helper:
         yield Path(configured_helper).expanduser()
     yield Path.home() / ".local/lib/hikvision-camera-viewer/hikvision_stream_helper"
     yield root / "app" / "hikvision_stream_helper"
+    yield from _packaged_helpers()
 
 
 def discover_hikvision_sdk(
@@ -267,7 +373,7 @@ def discover_hikvision_sdk(
             f"Searched: {searched_helpers}"
         )
     _check_elf_architecture(helper, host)
-    _verify_helper(helper)
+    _verify_helper(helper, library_directory, component_directory)
 
     return HikvisionSDKInstallation(
         root=root,

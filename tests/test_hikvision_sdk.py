@@ -126,7 +126,11 @@ class HikvisionSDKDiscoveryTests(unittest.TestCase):
                 installation = discover_hikvision_sdk(root)
             self.assertEqual(installation.root, root.resolve())
             self.assertEqual(installation.stream_helper, helper.resolve())
-            verify.assert_called_once_with(helper.resolve())
+            verify.assert_called_once_with(
+                helper.resolve(),
+                (root / "lib").resolve(),
+                (root / "lib/HCNetSDKCom").resolve(),
+            )
 
     def test_prefers_the_helper_installed_by_the_documented_make_target(self):
         host = hikvision_sdk._ELF_HOSTS[platform.machine().lower()]
@@ -150,7 +154,79 @@ class HikvisionSDKDiscoveryTests(unittest.TestCase):
             ) as verify:
                 installation = discover_hikvision_sdk(root)
             self.assertEqual(installation.stream_helper, local_helper.resolve())
-            verify.assert_called_once_with(local_helper.resolve())
+            verify.assert_called_once_with(
+                local_helper.resolve(),
+                (root / "lib").resolve(),
+                (root / "lib/HCNetSDKCom").resolve(),
+            )
+
+    def test_build_helper_uses_packaged_helper_when_make_is_unavailable(self):
+        host = hikvision_sdk._ELF_HOSTS[platform.machine().lower()]
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            root = home / "sdk"
+            helper = _sdk_fixture(root, host)
+            helper.unlink()
+            packaged_helper = home / "flatpak/hikvision_stream_helper"
+            _write_elf(packaged_helper, host)
+            packaged_helper.chmod(0o755)
+            with patch.dict(
+                os.environ,
+                {"HIKVISION_HELPER_PATH": "", "HIKVISION_SDK_DIR": ""},
+            ), patch.object(
+                hikvision_sdk.Path, "home", return_value=home
+            ), patch.object(
+                hikvision_sdk, "_helper_source_directory", return_value=home
+            ), patch.object(
+                hikvision_sdk,
+                "_packaged_helpers",
+                return_value=[packaged_helper],
+            ), patch.object(
+                hikvision_sdk.subprocess,
+                "run",
+                side_effect=FileNotFoundError("make not found"),
+            ), patch.object(
+                hikvision_sdk, "_verify_helper"
+            ) as verify:
+                installation = build_hikvision_helper(root)
+
+            self.assertEqual(
+                installation.stream_helper,
+                packaged_helper.resolve(),
+            )
+            verify.assert_called_once_with(
+                packaged_helper.resolve(),
+                (root / "lib").resolve(),
+                (root / "lib/HCNetSDKCom").resolve(),
+            )
+
+    def test_verify_helper_passes_sdk_library_paths_in_ld_library_path(self):
+        host = hikvision_sdk._ELF_HOSTS[platform.machine().lower()]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "sdk"
+            helper = _sdk_fixture(root, host)
+            hikvision_sdk._HELPER_CHECK_CACHE.clear()
+            with patch.object(
+                hikvision_sdk.subprocess,
+                "run",
+                return_value=type(
+                    "Result",
+                    (),
+                    {"returncode": 0, "stderr": "", "stdout": ""},
+                )(),
+            ) as run:
+                hikvision_sdk._verify_helper(
+                    helper,
+                    root / "lib",
+                    root / "lib/HCNetSDKCom",
+                )
+
+            env = run.call_args.kwargs["env"]
+            self.assertTrue(
+                env["LD_LIBRARY_PATH"].startswith(
+                    f"{root / 'lib'}:{root / 'lib/HCNetSDKCom'}"
+                )
+            )
 
     def test_rejects_mismatched_library_architecture(self):
         host = hikvision_sdk._ELF_HOSTS[platform.machine().lower()]

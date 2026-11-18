@@ -303,7 +303,11 @@ class HikvisionBackendTests(unittest.TestCase):
             poll=lambda: 0,
             wait=lambda timeout=None: 0,
         )
-        installation = types.SimpleNamespace(stream_helper="/external/helper")
+        installation = types.SimpleNamespace(
+            stream_helper="/external/helper",
+            library_directory="/external/sdk/lib",
+            component_directory="/external/sdk/lib/HCNetSDKCom",
+        )
         with patch.dict(
             os.environ,
             {"HIKVISION_STREAM_VERIFICATION_CODE": "never-forward-this"},
@@ -316,6 +320,11 @@ class HikvisionBackendTests(unittest.TestCase):
         self.assertEqual(
             child_environment["HIKVISION_STREAM_VERIFICATION_CODE"],
             "stream-code",
+        )
+        self.assertTrue(
+            child_environment["LD_LIBRARY_PATH"].startswith(
+                "/external/sdk/lib:/external/sdk/lib/HCNetSDKCom"
+            )
         )
         self.assertNotIn("never-forward-this", child_environment.values())
 
