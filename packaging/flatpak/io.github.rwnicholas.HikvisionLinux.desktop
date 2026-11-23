@@ -1,8 +1,0 @@
-[Desktop Entry]
-Name=Hikvision Camera Viewer
-Comment=View and record Hikvision DVR cameras
-Exec=hikvision-linux
-Icon=io.github.rwnicholas.HikvisionLinux
-Terminal=false
-Type=Application
-Categories=AudioVideo;

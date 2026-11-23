@@ -1,6 +1,6 @@
-# Hikvision Camera Viewer Application
+# HikLens
 
-A modern desktop application built in Python (PySide6) to monitor Hikvision DVR cameras.
+**HikLens** is a modern Linux desktop and Steam Deck application built in Python (PySide6) to monitor and play back Hikvision DVR and NVR cameras.
 
 ---
 
@@ -47,7 +47,7 @@ A modern desktop application built in Python (PySide6) to monitor Hikvision DVR 
    - Click the **Snapshot** button (or press `S`) to save uncompressed high-resolution snapshots.
    - Click **Record** (or press `R`) to save one camera as an MP4; in grid view, choose the camera to record. FFmpeg is required.
    - Click **Recordings** (or press `P`) to search previous DVR recordings by camera and date/time range and watch recorded segments (or play a custom time range) directly in the viewer using the Hikvision SDK (`NET_DVR_FindFile_V40` and `NET_DVR_PlayBackByName` / `NET_DVR_PlayBackByTime_V40`).
-   - Choose the destination for snapshots and recordings in **Settings**. The default is `./snapshots/` natively and `Pictures/Hikvision Camera Viewer/` in Flatpak.
+   - Choose the destination for snapshots and recordings in **Settings**. The default is `./snapshots/` natively and `Pictures/HikLens/` in Flatpak.
 
 6. **HQ RTSP Stream Launcher**:
    - Click **"Open HQ RTSP"** to spawn `ffplay` with low-latency flags (`-fflags nobuffer -flags low_delay -framedrop`) for full-framerate hardware decoding when needed.
@@ -107,20 +107,38 @@ With Flatpak, Flatpak Builder, and the Flathub runtime available, build and
 install the app with:
 
 ```bash
-flatpak-builder --user --install --force-clean flatpak-build packaging/flatpak/io.github.rwnicholas.HikvisionLinux.yml
-flatpak run io.github.rwnicholas.HikvisionLinux
+flatpak-builder --user --install --force-clean flatpak-build packaging/flatpak/io.github.rwnicholas.HikLens.yml
+flatpak run io.github.rwnicholas.HikLens
 ```
 
 To create a distributable `.flatpak` bundle instead:
 
 ```bash
-flatpak-builder --repo=flatpak-repo flatpak-build packaging/flatpak/io.github.rwnicholas.HikvisionLinux.yml
-flatpak build-bundle flatpak-repo HikvisionCameraViewer.flatpak io.github.rwnicholas.HikvisionLinux stable
+flatpak-builder --repo=flatpak-repo flatpak-build packaging/flatpak/io.github.rwnicholas.HikLens.yml
+flatpak build-bundle flatpak-repo HikLens.flatpak io.github.rwnicholas.HikLens stable
 ```
 
 The first build downloads the pinned Python dependencies. The Flatpak includes
 the app runtime's FFmpeg and requests LAN access for DVR streams. The target
 runtime must be installed locally or available from a configured Flatpak remote.
+
+### FlatPark Repository (`flatpark.org`)
+
+In addition to downloading the direct `.flatpak` and `.AppImage` bundles from
+GitHub Releases, a [FlatPark](https://flatpark.org/) `extra-data` package
+descriptor is provided in [`packaging/flatpark/`](./packaging/flatpark/) and
+[`.github/workflows/build-packages.yml`](./.github/workflows/build-packages.yml)
+automatically notifies FlatPark via `flatpark/publish-action@v1` whenever a new
+GitHub Release is published.
+
+Once the package is registered in the FlatPark catalog, users on Linux or Steam
+Deck can add the FlatPark remote once and receive automatic updates through
+`flatpak update` or KDE Discover:
+
+```bash
+flatpak --user remote-add --if-not-exists flatpark https://dl.flatpark.org/flatpark.flatpakrepo
+flatpak --user install flatpark io.github.rwnicholas.HikLens
+```
 
 ## AppImage
 
@@ -130,7 +148,7 @@ Build the x86_64 AppImage with Podman or Docker, `curl`, and `sha256sum`:
 ./packaging/appimage/build-appimage.sh
 ```
 
-The output is `dist/HikvisionCameraViewer-x86_64.AppImage`. The AppImage
+The output is `dist/HikLens-x86_64.AppImage`. The AppImage
 bundles Python and Qt; install FFmpeg on the host for embedded RTSP and video
 recording, and `ffplay` for the separate HQ RTSP player. Both Linux packages
 use embedded vector icons for consistent control rendering across hosts.

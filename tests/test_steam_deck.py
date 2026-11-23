@@ -87,24 +87,24 @@ class SteamDeckIntegrationTests(unittest.TestCase):
 
             updated = register_steam_shortcut(
                 home_dir=home,
-                env={"FLATPAK_ID": "io.github.rwnicholas.HikvisionLinux"},
+                env={"FLATPAK_ID": "io.github.rwnicholas.HikLens"},
             )
             self.assertEqual(updated, [vdf_file.resolve()])
 
             parsed = parse_shortcuts_vdf(vdf_file.read_bytes())
             self.assertEqual(len(parsed), 2)
             self.assertEqual(parsed[0]["AppName"], "FooApp")
-            self.assertEqual(parsed[1]["AppName"], "Hikvision Camera Viewer")
+            self.assertEqual(parsed[1]["AppName"], "HikLens")
             self.assertEqual(parsed[1]["Exe"], '"/usr/bin/flatpak"')
             self.assertIn(
-                "run io.github.rwnicholas.HikvisionLinux --steam-deck",
+                "run io.github.rwnicholas.HikLens --steam-deck",
                 str(parsed[1]["LaunchOptions"]),
             )
 
             # Re-registering updates in place instead of duplicating
             register_steam_shortcut(
                 home_dir=home,
-                env={"FLATPAK_ID": "io.github.rwnicholas.HikvisionLinux"},
+                env={"FLATPAK_ID": "io.github.rwnicholas.HikLens"},
             )
             parsed_again = parse_shortcuts_vdf(vdf_file.read_bytes())
             self.assertEqual(len(parsed_again), 2)
@@ -112,7 +112,7 @@ class SteamDeckIntegrationTests(unittest.TestCase):
             # Also supports an explicit steam_dir path (e.g. chosen via portal file dialog in Flatpak)
             explicit_updated = register_steam_shortcut(
                 steam_dir=home / ".local/share/Steam",
-                env={"FLATPAK_ID": "io.github.rwnicholas.HikvisionLinux"},
+                env={"FLATPAK_ID": "io.github.rwnicholas.HikLens"},
             )
             self.assertEqual(explicit_updated, [vdf_file.resolve()])
 

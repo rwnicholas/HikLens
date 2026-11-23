@@ -6,7 +6,7 @@ TOOLS_DIR="$PROJECT_ROOT/.appimage-tools"
 BUILD_DIR="$PROJECT_ROOT/.appimage-build"
 OUTPUT_DIR="$PROJECT_ROOT/dist"
 APPDIR="$BUILD_DIR/AppDir"
-OUTPUT="$OUTPUT_DIR/HikvisionCameraViewer-x86_64.AppImage"
+OUTPUT="$OUTPUT_DIR/HikLens-x86_64.AppImage"
 
 if [ -n "${CONTAINER_ENGINE:-}" ]; then
     case "$CONTAINER_ENGINE" in
@@ -124,38 +124,38 @@ run_builder \
             --clean \
             --onedir \
             --windowed \
-            --name HikvisionCameraViewer \
+            --name HikLens \
             --add-data /src/hikvision-sdk:hikvision-sdk \
             --distpath /out/dist \
             --workpath /out/build \
             /src/cam_viewer.py
 
         appdir=/out/AppDir
-        install -d "$appdir/usr/lib/hikvision-camera-viewer"
-        cp -a /out/dist/HikvisionCameraViewer/. "$appdir/usr/lib/hikvision-camera-viewer/"
+        install -d "$appdir/usr/lib/hiklens"
+        cp -a /out/dist/HikLens/. "$appdir/usr/lib/hiklens/"
         rm -f \
-            "$appdir/usr/lib/hikvision-camera-viewer/_internal/libfontconfig.so.1" \
-            "$appdir/usr/lib/hikvision-camera-viewer/_internal/libfreetype.so.6"
+            "$appdir/usr/lib/hiklens/_internal/libfontconfig.so.1" \
+            "$appdir/usr/lib/hiklens/_internal/libfreetype.so.6"
         # The optional GTK theme plugin pulls in GTK3; the app uses its own palette.
-        rm -f "$appdir/usr/lib/hikvision-camera-viewer/_internal/PySide6/Qt/plugins/platformthemes/libqgtk3.so"
+        rm -f "$appdir/usr/lib/hiklens/_internal/PySide6/Qt/plugins/platformthemes/libqgtk3.so"
         install -Dm755 /src/packaging/appimage/AppRun "$appdir/AppRun"
         install -Dm644 \
-            /src/packaging/appimage/io.github.rwnicholas.HikvisionLinux.desktop \
-            "$appdir/io.github.rwnicholas.HikvisionLinux.desktop"
+            /src/packaging/appimage/io.github.rwnicholas.HikLens.desktop \
+            "$appdir/io.github.rwnicholas.HikLens.desktop"
         install -Dm644 \
-            /src/packaging/io.github.rwnicholas.HikvisionLinux.appdata.xml \
-            "$appdir/usr/share/metainfo/io.github.rwnicholas.HikvisionLinux.appdata.xml"
-        install -Dm644 /src/packaging/flatpak/io.github.rwnicholas.HikvisionLinux.svg \
-            "$appdir/usr/share/icons/hicolor/scalable/apps/io.github.rwnicholas.HikvisionLinux.svg"
+            /src/packaging/io.github.rwnicholas.HikLens.appdata.xml \
+            "$appdir/usr/share/metainfo/io.github.rwnicholas.HikLens.appdata.xml"
+        install -Dm644 /src/packaging/flatpak/io.github.rwnicholas.HikLens.svg \
+            "$appdir/usr/share/icons/hicolor/scalable/apps/io.github.rwnicholas.HikLens.svg"
         rsvg-convert -w 256 -h 256 \
-            /src/packaging/flatpak/io.github.rwnicholas.HikvisionLinux.svg \
+            /src/packaging/flatpak/io.github.rwnicholas.HikLens.svg \
             -o "$appdir/.DirIcon"
         install -Dm644 /src/LICENSE \
-            "$appdir/usr/share/licenses/hikvision-camera-viewer/LICENSE"
+            "$appdir/usr/share/licenses/hiklens/LICENSE"
         install -Dm644 /usr/share/common-licenses/LGPL-3 \
-            "$appdir/usr/share/licenses/hikvision-camera-viewer/LGPL-3.0.txt"
+            "$appdir/usr/share/licenses/hiklens/LGPL-3.0.txt"
 
-        python - "$appdir/usr/share/doc/hikvision-camera-viewer/licenses" <<'"'"'PY'"'"'
+        python - "$appdir/usr/share/doc/hiklens/licenses" <<'"'"'PY'"'"'
 import shutil
 import sys
 from pathlib import Path
@@ -175,19 +175,19 @@ PY
             [ -f "$copyright_file" ] || continue
             package=$(basename "$(dirname "$copyright_file")")
             install -Dm644 "$copyright_file" \
-                "$appdir/usr/share/doc/hikvision-camera-viewer/licenses/system/$package/copyright"
+                "$appdir/usr/share/doc/hiklens/licenses/system/$package/copyright"
         done
 
         /tools/linuxdeploy-x86_64.AppImage --appimage-extract-and-run \
             --appdir "$appdir" \
             --custom-apprun /src/packaging/appimage/AppRun \
-            --desktop-file /src/packaging/appimage/io.github.rwnicholas.HikvisionLinux.desktop \
+            --desktop-file /src/packaging/appimage/io.github.rwnicholas.HikLens.desktop \
             --exclude-library=libfontconfig.so.1 \
             --exclude-library=libfreetype.so.6 \
-            --deploy-deps-only "$appdir/usr/lib/hikvision-camera-viewer"
+            --deploy-deps-only "$appdir/usr/lib/hiklens"
 
         make -C /src/hikvision-sdk portable-helper \
-            HELPER="$appdir/usr/lib/hikvision-camera-viewer/hikvision_stream_helper"
+            HELPER="$appdir/usr/lib/hiklens/hikvision_stream_helper"
     '
 
 ARCH=x86_64 "$TOOLS_DIR/appimagetool-x86_64.AppImage" \

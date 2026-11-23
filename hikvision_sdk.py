@@ -78,6 +78,7 @@ HIKVISION_SDK_DOWNLOAD_URL = (
 def _helper_source_directory() -> Path:
     candidates = [
         Path(__file__).resolve().parent / "hikvision-sdk",
+        Path("/app/share/hiklens/hikvision-sdk"),
         Path("/app/share/hikvision-linux/hikvision-sdk"),
     ]
     bundle_directory = getattr(sys, "_MEIPASS", None)
@@ -357,6 +358,7 @@ def _packaged_helpers():
         yield Path(bundle_directory) / "hikvision-sdk" / "hikvision_stream_helper"
         yield Path(bundle_directory).parent / "hikvision_stream_helper"
     yield Path(__file__).resolve().parent / "hikvision_stream_helper"
+    yield Path("/app/lib/hiklens/hikvision_stream_helper")
     yield Path("/app/lib/hikvision-camera-viewer/hikvision_stream_helper")
 
 
@@ -364,6 +366,7 @@ def _candidate_helpers(root: Path):
     configured_helper = os.environ.get("HIKVISION_HELPER_PATH", "").strip()
     if configured_helper:
         yield Path(configured_helper).expanduser()
+    yield Path.home() / ".local/lib/hiklens/hikvision_stream_helper"
     yield Path.home() / ".local/lib/hikvision-camera-viewer/hikvision_stream_helper"
     yield root / "app" / "hikvision_stream_helper"
     yield from _packaged_helpers()

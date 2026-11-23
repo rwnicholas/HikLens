@@ -1,0 +1,63 @@
+app-id: io.github.rwnicholas.HikLens
+branch: stable
+runtime: org.freedesktop.Platform
+runtime-version: "26.08"
+sdk: org.freedesktop.Sdk
+command: hiklens
+finish-args:
+  - --share=network
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --filesystem=xdg-pictures
+  - --filesystem=xdg-download:ro
+  - --filesystem=xdg-data/Steam:rw
+  - --filesystem=~/.steam:rw
+modules:
+  - name: hiklens
+    buildsystem: simple
+    build-options:
+      build-args:
+        - --share=network
+    build-commands:
+      - python3 -m pip install --disable-pip-version-check --no-cache-dir --target=/app/lib/hiklens-python -r requirements.txt
+      - install -Dm755 hiklens.sh /app/bin/hiklens
+      - ln -sf hiklens /app/bin/hikvision-linux
+      - install -Dm644 cam_viewer.py /app/share/hiklens/cam_viewer.py
+      - install -Dm644 capture_backends.py /app/share/hiklens/capture_backends.py
+      - install -Dm644 hikvision_backend.py /app/share/hiklens/hikvision_backend.py
+      - install -Dm644 hikvision_sdk.py /app/share/hiklens/hikvision_sdk.py
+      - install -Dm644 steam_deck.py /app/share/hiklens/steam_deck.py
+      - install -d /app/share/hiklens/hikvision-sdk
+      - install -Dm644 Makefile /app/share/hiklens/hikvision-sdk/Makefile
+      - install -Dm644 sdk_stream_test.cpp /app/share/hiklens/hikvision-sdk/sdk_stream_test.cpp
+      - make -C /app/share/hiklens/hikvision-sdk portable-helper HELPER=/app/lib/hiklens/hikvision_stream_helper
+      - install -Dm644 io.github.rwnicholas.HikLens.desktop /app/share/applications/io.github.rwnicholas.HikLens.desktop
+      - install -Dm644 io.github.rwnicholas.HikLens.svg /app/share/icons/hicolor/scalable/apps/io.github.rwnicholas.HikLens.svg
+      - install -Dm644 io.github.rwnicholas.HikLens.appdata.xml /app/share/metainfo/io.github.rwnicholas.HikLens.appdata.xml
+    sources:
+      - type: file
+        path: ../../cam_viewer.py
+      - type: file
+        path: ../../capture_backends.py
+      - type: file
+        path: ../../hikvision_backend.py
+      - type: file
+        path: ../../hikvision_sdk.py
+      - type: file
+        path: ../../steam_deck.py
+      - type: file
+        path: ../../hikvision-sdk/Makefile
+      - type: file
+        path: ../../hikvision-sdk/sdk_stream_test.cpp
+      - type: file
+        path: ../../requirements.txt
+      - type: file
+        path: hiklens.sh
+      - type: file
+        path: io.github.rwnicholas.HikLens.desktop
+      - type: file
+        path: io.github.rwnicholas.HikLens.svg
+      - type: file
+        path: ../io.github.rwnicholas.HikLens.appdata.xml

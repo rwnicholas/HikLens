@@ -35,13 +35,13 @@ jobs:
       - name: Version AppImage
         env:
           VERSION: ${{ needs.version.outputs.version }}
-        run: mv dist/HikvisionCameraViewer-x86_64.AppImage "dist/HikvisionCameraViewer-${VERSION}-x86_64.AppImage"
+        run: mv dist/HikLens-x86_64.AppImage "dist/HikLens-${VERSION}-x86_64.AppImage"
 
       - name: Upload AppImage
         uses: actions/upload-artifact@v7
         with:
-          name: HikvisionCameraViewer-${{ needs.version.outputs.version }}-AppImage
-          path: dist/HikvisionCameraViewer-${{ needs.version.outputs.version }}-x86_64.AppImage
+          name: HikLens-${{ needs.version.outputs.version }}-AppImage
+          path: dist/HikLens-${{ needs.version.outputs.version }}-x86_64.AppImage
           if-no-files-found: error
           compression-level: 0
 
@@ -70,19 +70,19 @@ jobs:
       - name: Build Flatpak bundle
         run: |
           flatpak-builder --user --force-clean --repo=flatpak-repo \
-            flatpak-build packaging/flatpak/io.github.rwnicholas.HikvisionLinux.yml
+            flatpak-build packaging/flatpak/io.github.rwnicholas.HikLens.yml
           mkdir -p dist
           flatpak build-bundle flatpak-repo \
-            "dist/HikvisionCameraViewer-${VERSION}.flatpak" \
-            io.github.rwnicholas.HikvisionLinux stable
+            "dist/HikLens-${VERSION}.flatpak" \
+            io.github.rwnicholas.HikLens stable
         env:
           VERSION: ${{ needs.version.outputs.version }}
 
       - name: Upload Flatpak bundle
         uses: actions/upload-artifact@v7
         with:
-          name: HikvisionCameraViewer-${{ needs.version.outputs.version }}-Flatpak
-          path: dist/HikvisionCameraViewer-${{ needs.version.outputs.version }}.flatpak
+          name: HikLens-${{ needs.version.outputs.version }}-Flatpak
+          path: dist/HikLens-${{ needs.version.outputs.version }}.flatpak
           if-no-files-found: error
           compression-level: 0
 
@@ -97,7 +97,7 @@ jobs:
       - name: Download package artifacts
         uses: actions/download-artifact@v8
         with:
-          pattern: HikvisionCameraViewer-${{ needs.version.outputs.version }}-*
+          pattern: HikLens-${{ needs.version.outputs.version }}-*
           path: release-assets
           merge-multiple: true
 
@@ -111,7 +111,19 @@ jobs:
             exit 0
           fi
           gh release create "$VERSION" release-assets/* \
-            --title "Hikvision Camera Viewer $VERSION" \
+            --title "HikLens $VERSION" \
             --generate-notes \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA"
+
+  flatpark:
+    name: Notify FlatPark
+    runs-on: ubuntu-24.04
+    needs: release
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    continue-on-error: true
+    steps:
+      - name: Notify FlatPark of new release
+        uses: flatpark/publish-action@v1
+        with:
+          app-id: io.github.rwnicholas.HikLens

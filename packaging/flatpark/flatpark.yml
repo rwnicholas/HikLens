@@ -1,0 +1,11 @@
+id: io.github.rwnicholas.HikLens
+name: HikLens
+summary: Monitor and play back Hikvision DVR and NVR cameras on Linux and Steam Deck
+category: AudioVideo
+source_url: https://github.com/rwnicholas/HikLens
+build:
+  manifest: io.github.rwnicholas.HikLens.yml
+  branch: stable
+  mode: extra-data
+update:
+  command: ./resolve-update.sh

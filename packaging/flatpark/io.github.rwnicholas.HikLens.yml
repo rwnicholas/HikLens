@@ -1,0 +1,43 @@
+app-id: io.github.rwnicholas.HikLens
+branch: stable
+runtime: org.freedesktop.Platform
+runtime-version: "26.08"
+sdk: org.freedesktop.Sdk
+command: hiklens
+finish-args:
+  - --share=network
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --filesystem=xdg-pictures
+  - --filesystem=xdg-download:ro
+  - --filesystem=xdg-data/Steam:rw
+  - --filesystem=~/.steam:rw
+modules:
+  - name: hiklens
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 apply_extra.sh /app/bin/apply_extra
+      - install -Dm755 hiklens.sh /app/bin/hiklens
+      - install -Dm644 io.github.rwnicholas.HikLens.desktop /app/share/applications/io.github.rwnicholas.HikLens.desktop
+      - install -Dm644 io.github.rwnicholas.HikLens.svg /app/share/icons/hicolor/scalable/apps/io.github.rwnicholas.HikLens.svg
+      - install -Dm644 io.github.rwnicholas.HikLens.appdata.xml /app/share/metainfo/io.github.rwnicholas.HikLens.appdata.xml
+    sources:
+      - type: extra-data
+        filename: HikLens.AppImage
+        only-arches:
+          - x86_64
+        url: https://github.com/rwnicholas/HikLens/releases/download/v1.0.7/HikLens-v1.0.7-x86_64.AppImage
+        sha256: REPLACE_WITH_RELEASE_SHA256
+        size: 0
+      - type: file
+        path: apply_extra.sh
+      - type: file
+        path: hiklens.sh
+      - type: file
+        path: ../flatpak/io.github.rwnicholas.HikLens.desktop
+      - type: file
+        path: ../flatpak/io.github.rwnicholas.HikLens.svg
+      - type: file
+        path: ../io.github.rwnicholas.HikLens.appdata.xml

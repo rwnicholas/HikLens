@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Hikvision Camera Viewer Application
+HikLens — DVR & CCTV Camera Viewer for Linux and Steam Deck
 Configure the DVR through the Settings dialog or DVR_* environment variables.
 """
 
@@ -196,7 +196,7 @@ def default_artifact_directory():
         pictures_dir = QStandardPaths.writableLocation(
             QStandardPaths.PicturesLocation
         )
-        return str((Path(pictures_dir) / "Hikvision Camera Viewer").resolve())
+        return str((Path(pictures_dir) / "HikLens").resolve())
     return str(Path("./snapshots").resolve())
 
 
@@ -1310,7 +1310,7 @@ class SettingsDialog(QDialog):
         self.btn_add_to_steam = QPushButton("Add to Steam Library")
         self.btn_add_to_steam.setIcon(_make_icon("gamepad"))
         self.btn_add_to_steam.setToolTip(
-            "Register Hikvision Camera Viewer as a Non-Steam shortcut for Steam Deck Gaming Mode"
+            "Register HikLens as a Non-Steam shortcut for Steam Deck Gaming Mode"
         )
         self.btn_add_to_steam.clicked.connect(self._add_to_steam_library)
         self.btn_open_steam_osk = QPushButton("Show Steam Keyboard")
@@ -1414,7 +1414,7 @@ class SettingsDialog(QDialog):
         QMessageBox.information(
             self,
             "Added to Steam Library",
-            "Hikvision Camera Viewer was added to your Steam Non-Steam shortcuts:\n\n"
+            "HikLens was added to your Steam Non-Steam shortcuts:\n\n"
             f"{formatted}\n\n"
             "Restart Steam or switch to Gaming Mode on your Steam Deck to launch it.",
         )
@@ -2677,7 +2677,7 @@ class MainWindow(QMainWindow):
         enable_gamepad: bool = True,
     ):
         super().__init__()
-        self.setWindowTitle("Hikvision CCTV Stream Viewer")
+        self.setWindowTitle("HikLens — DVR & CCTV Stream Viewer")
         self.steam_deck_mode = (
             bool(steam_deck_mode)
             if steam_deck_mode is not None
@@ -3856,7 +3856,7 @@ def main(argv: list[str] | None = None) -> int:
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Hikvision CCTV Stream Viewer (Desktop & Steam Deck)"
+        description="HikLens — DVR & CCTV Stream Viewer (Desktop & Steam Deck)"
     )
     parser.add_argument(
         "--steam-deck",
@@ -3871,7 +3871,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--add-to-steam",
         action="store_true",
-        help="Register Hikvision Camera Viewer as a Non-Steam shortcut in Steam and exit",
+        help="Register HikLens as a Non-Steam shortcut in Steam and exit",
     )
     args, qt_args = parser.parse_known_args(
         sys.argv[1:] if argv is None else argv
@@ -3890,7 +3890,8 @@ def main(argv: list[str] | None = None) -> int:
     # Enable High DPI scaling
     os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
     app = QApplication([sys.argv[0], *qt_args])
-    app.setApplicationName("Hikvision CCTV Stream Viewer")
+    app.setApplicationName("HikLens")
+    app.setDesktopFileName("io.github.rwnicholas.HikLens")
     _configure_dark_theme(app)
     font = QFont("Sans-Serif", 10)
     app.setFont(font)

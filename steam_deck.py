@@ -8,7 +8,23 @@ from pathlib import Path
 import struct
 from typing import Callable
 
-from PySide6.QtCore import QThread, Signal
+try:
+    from PySide6.QtCore import QThread, Signal
+except ImportError:
+    import threading
+
+    class Signal:  # type: ignore[no-redef]
+        def __init__(self, *types):
+            del types
+
+    class QThread(threading.Thread):  # type: ignore[no-redef]
+        def __init__(self, parent=None):
+            super().__init__(daemon=True)
+            self.parent = parent
+
+        def wait(self, _ms=None):
+            if self.is_alive():
+                self.join(timeout=1.5)
 
 
 STEAM_DECK_WIDTH = 1280
@@ -322,6 +338,8 @@ def resolve_steam_launch_command(
     environment = os.environ if env is None else env
     root = (project_root or Path(__file__).resolve().parent).resolve()
     icon_candidates = [
+        root / "packaging/flatpak/io.github.rwnicholas.HikLens.svg",
+        Path("/app/share/icons/hicolor/scalable/apps/io.github.rwnicholas.HikLens.svg"),
         root / "packaging/flatpak/io.github.rwnicholas.HikvisionLinux.svg",
         Path("/app/share/icons/hicolor/scalable/apps/io.github.rwnicholas.HikvisionLinux.svg"),
     ]
@@ -438,13 +456,13 @@ def find_steam_userdata_dirs(
 
 
 def register_steam_shortcut(
-    appname: str = "Hikvision Camera Viewer",
+    appname: str = "HikLens",
     project_root: Path | None = None,
     home_dir: Path | None = None,
     steam_dir: str | os.PathLike[str] | None = None,
     env: dict[str, str] | None = None,
 ) -> list[Path]:
-    """Add or update Hikvision Camera Viewer in Steam's Non-Steam shortcuts.vdf for all local Steam users.
+    """Add or update HikLens in Steam's Non-Steam shortcuts.vdf for all local Steam users.
 
     Returns the list of modified shortcuts.vdf paths.
     """
@@ -504,9 +522,10 @@ def register_steam_shortcut(
                 existing = []
 
         replaced = False
+        legacy_names = {appname.lower(), "hikvision camera viewer"}
         for idx, item in enumerate(existing):
             existing_name = str(item.get("AppName") or item.get("appname") or "").strip()
-            if existing_name.lower() == appname.lower():
+            if existing_name.lower() in legacy_names:
                 existing[idx] = shortcut_entry
                 replaced = True
                 break

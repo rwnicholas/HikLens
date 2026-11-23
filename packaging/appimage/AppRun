@@ -3,4 +3,4 @@ set -eu
 
 APPDIR="${APPDIR:-$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)}"
 export PATH="$APPDIR/usr/bin${PATH:+:$PATH}"
-exec "$APPDIR/usr/lib/hikvision-camera-viewer/HikvisionCameraViewer" "$@"
+exec "$APPDIR/usr/lib/hiklens/HikLens" "$@"
