@@ -23,7 +23,6 @@ modules:
     build-commands:
       - python3 -m pip install --disable-pip-version-check --no-cache-dir --target=/app/lib/hiklens-python -r requirements.txt
       - install -Dm755 hiklens.sh /app/bin/hiklens
-      - ln -sf hiklens /app/bin/hikvision-linux
       - install -Dm644 cam_viewer.py /app/share/hiklens/cam_viewer.py
       - install -Dm644 capture_backends.py /app/share/hiklens/capture_backends.py
       - install -Dm644 hikvision_backend.py /app/share/hiklens/hikvision_backend.py

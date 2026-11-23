@@ -143,8 +143,19 @@ class SteamDeckIntegrationTests(unittest.TestCase):
 
     @unittest.skipIf(QApplication is None, "PySide6 is required for UI gamepad tests")
     def test_main_window_and_recordings_dialog_handle_gamepad_navigation(self):
+        from cam_viewer import ViewerState
+
         with patch.object(MainWindow, "_start_threads"), patch.object(
             MainWindow, "_restore_viewer_state"
+        ), patch(
+            "cam_viewer.load_dvr_config",
+            return_value=DVRConfig(channels=[1, 2, 3, 4]),
+        ), patch(
+            "cam_viewer.load_viewer_state",
+            return_value=ViewerState(
+                visible_channels=[1, 2, 3, 4],
+                artifact_directory=tempfile.gettempdir(),
+            ),
         ):
             window = MainWindow(steam_deck_mode=True, enable_gamepad=False)
 

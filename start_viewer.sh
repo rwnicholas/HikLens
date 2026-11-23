@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
-# Quick launcher for Hikvision CCTV Stream Viewer
+# Quick launcher for HikLens
 cd "$(dirname "$0")"
 python3 cam_viewer.py "$@"

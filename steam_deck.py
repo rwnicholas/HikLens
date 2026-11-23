@@ -340,8 +340,6 @@ def resolve_steam_launch_command(
     icon_candidates = [
         root / "packaging/flatpak/io.github.rwnicholas.HikLens.svg",
         Path("/app/share/icons/hicolor/scalable/apps/io.github.rwnicholas.HikLens.svg"),
-        root / "packaging/flatpak/io.github.rwnicholas.HikvisionLinux.svg",
-        Path("/app/share/icons/hicolor/scalable/apps/io.github.rwnicholas.HikvisionLinux.svg"),
     ]
     icon_path = next((str(p) for p in icon_candidates if p.is_file()), "")
 
@@ -522,10 +520,9 @@ def register_steam_shortcut(
                 existing = []
 
         replaced = False
-        legacy_names = {appname.lower(), "hikvision camera viewer"}
         for idx, item in enumerate(existing):
             existing_name = str(item.get("AppName") or item.get("appname") or "").strip()
-            if existing_name.lower() in legacy_names:
+            if existing_name.lower() == appname.lower():
                 existing[idx] = shortcut_entry
                 replaced = True
                 break

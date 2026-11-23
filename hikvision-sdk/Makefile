@@ -5,7 +5,7 @@ CXX ?= c++
 SDK_LIB := $(SDK_ROOT)/lib
 SDK_COMPONENTS := $(SDK_LIB)/HCNetSDKCom
 TARGET := $(BUILD_DIR)/sdk_stream_test
-HELPER ?= $(HOME)/.local/lib/hikvision-camera-viewer/hikvision_stream_helper
+HELPER ?= $(HOME)/.local/lib/hiklens/hikvision_stream_helper
 STUB_DIR := $(BUILD_DIR)/stubs
 
 .PHONY: all run helper portable-helper clean

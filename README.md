@@ -202,7 +202,7 @@ backend:
 3. Back in **Settings**, use **Browse...** to select the SDK root and click
    **Build / Verify Helper**. This builds the open integration helper locally
    against your SDK, installs it under
-   `~/.local/lib/hikvision-camera-viewer/`, and checks that the libraries load.
+   `~/.local/lib/hiklens/`, and checks that the libraries load.
    The build requires `make` and a C++17 compiler (`g++`) available to the app.
    No vendor binaries are downloaded or bundled by the application.
 4. Set these values in **Settings**:

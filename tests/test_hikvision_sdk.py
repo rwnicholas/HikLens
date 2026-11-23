@@ -141,7 +141,7 @@ class HikvisionSDKDiscoveryTests(unittest.TestCase):
             root = home / "sdk"
             _sdk_fixture(root, host)
             local_helper = (
-                home / ".local/lib/hikvision-camera-viewer/hikvision_stream_helper"
+                home / ".local/lib/hiklens/hikvision_stream_helper"
             )
             _write_elf(local_helper, host)
             local_helper.chmod(0o755)
