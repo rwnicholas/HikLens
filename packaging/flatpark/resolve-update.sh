@@ -1,70 +1,23 @@
-#!/usr/bin/env python3
-"""Resolve the latest GitHub Release AppImage URL, SHA-256, and byte size for FlatPark."""
+#!/usr/bin/env bash
+# Update resolver for HikLens: the latest GitHub release and its x86_64 AppImage.
+# Prints { "version", "releaseDate", "sources": [...] } on stdout; logs go to
+# stderr. update-pins reads the GitHub release asset's digest and size.
+set -euo pipefail
 
-from __future__ import annotations
+repo="rwnicholas/HikLens"
 
-import hashlib
-import json
-from pathlib import Path
-import re
-import sys
-import urllib.request
+need() { command -v "$1" >/dev/null 2>&1 || { echo "missing command: $1" >&2; exit 1; }; }
+need curl; need jq
 
-REPO = "rwnicholas/HikLens"
-API_URL = f"https://api.github.com/repos/{REPO}/releases/latest"
-MANIFEST_PATH = Path(__file__).resolve().parent / "io.github.rwnicholas.HikLens.yml"
+rel="$(curl -fsSL ${GITHUB_TOKEN:+-H "Authorization: Bearer $GITHUB_TOKEN"} \
+        "https://api.github.com/repos/$repo/releases/latest")"
 
-
-def fetch_latest_appimage_asset() -> tuple[str, str, int]:
-    request = urllib.request.Request(
-        API_URL,
-        headers={"Accept": "application/vnd.github+json", "User-Agent": "flatpark-updater"},
-    )
-    with urllib.request.urlopen(request, timeout=30) as response:
-        release = json.loads(response.read().decode("utf-8"))
-
-    tag = str(release.get("tag_name", "")).strip()
-    for asset in release.get("assets", []):
-        name = str(asset.get("name", ""))
-        if name.endswith("-x86_64.AppImage") or name.endswith(".AppImage"):
-            return (
-                tag,
-                str(asset["browser_download_url"]),
-                int(asset.get("size", 0)),
-            )
-    raise RuntimeError(f"No x86_64 AppImage asset found in {REPO} latest release ({tag}).")
-
-
-def compute_sha256(url: str) -> tuple[str, int]:
-    digest = hashlib.sha256()
-    total = 0
-    request = urllib.request.Request(url, headers={"User-Agent": "flatpark-updater"})
-    with urllib.request.urlopen(request, timeout=120) as response:
-        while True:
-            chunk = response.read(1024 * 1024)
-            if not chunk:
-                break
-            digest.update(chunk)
-            total += len(chunk)
-    return digest.hexdigest(), total
-
-
-def update_manifest(url: str, sha256: str, size: int, manifest_path: Path = MANIFEST_PATH) -> None:
-    text = manifest_path.read_text(encoding="utf-8")
-    text = re.sub(r"(^\s*url:\s*).*$", rf"\g<1>{url}", text, flags=re.MULTILINE)
-    text = re.sub(r"(^\s*sha256:\s*).*$", rf"\g<1>{sha256}", text, flags=re.MULTILINE)
-    text = re.sub(r"(^\s*size:\s*).*$", rf"\g<1>{size}", text, flags=re.MULTILINE)
-    manifest_path.write_text(text, encoding="utf-8")
-
-
-def main() -> int:
-    tag, url, reported_size = fetch_latest_appimage_asset()
-    sha256, actual_size = compute_sha256(url)
-    size = actual_size or reported_size
-    update_manifest(url, sha256, size)
-    print(json.dumps({"version": tag.lstrip("v"), "tag": tag, "url": url, "sha256": sha256, "size": size}))
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+jq -e '
+  (.tag_name | ltrimstr("v")) as $version |
+  ([.assets[] | select(.name == ("HikLens-v" + $version + "-x86_64.AppImage"))] |
+    if length == 1 then .[0].browser_download_url
+    else error("failed to resolve HikLens release: no x86_64 AppImage for " + $version) end) as $url |
+  {version: $version, releaseDate: (.published_at | split("T")[0]),
+   sources: [{filename: "hiklens.AppImage", url: $url}]} |
+  if (.version | length) > 0 and (.releaseDate | length) > 0 then . else error("missing release metadata") end
+' <<<"$rel"
