@@ -20,6 +20,7 @@ build:
     - x86_64
 catalog:
   category: AudioVideo
+  upstream_approved: true
   tags:
     - CCTV
     - DVR
